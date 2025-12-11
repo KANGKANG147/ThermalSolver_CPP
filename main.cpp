@@ -356,6 +356,36 @@ PartProperty get_part_property(const std::string& group_name) {
 // ==========================================
 struct Triangle { Vec3 v0, v1, v2; };
 
+// 唯一的顶点 ID (用于焊接)
+struct VertexKey {
+    long long x, y, z;
+    bool operator<(const VertexKey& other) const {
+        if (x != other.x) return x < other.x;
+        if (y != other.y) return y < other.y;
+        return z < other.z;
+    }
+};
+
+// 简单的边结构 (由两个顶点ID组成)
+struct EdgeKey {
+    int v1, v2;
+    bool operator<(const EdgeKey& other) const {
+        if (v1 != other.v1) return v1 < other.v1;
+        return v2 < other.v2;
+    }
+};
+
+// 将坐标量化为整数 Key (容差 1mm)
+VertexKey to_key(const Vec3& v) {
+    const double SCALE = 1000.0; // 精度 1mm
+    return { (long long)std::round(v.x * SCALE), (long long)std::round(v.y * SCALE), (long long)std::round(v.z * SCALE) };
+}
+
+struct EdgeLink {
+    int neighbor_idx;
+    double conductance;
+};
+
 struct ThermalNode {
     double T_front, T_back;
     double T_front_next, T_back_next;
@@ -370,6 +400,11 @@ struct ThermalNode {
     double shadow_factor;
     std::string part_name;
     std::vector<Triangle> geometry_tris;
+
+    // 横向邻居列表 
+    std::vector<EdgeLink> neighbors;
+    double k_mat; // 需要存一下材料的 k 值，用于计算横向导热
+    double thickness; // 存一下厚度
 };
 std::vector<ThermalNode> g_nodes;
 
@@ -438,6 +473,8 @@ bool init_model(const std::string& filename) {
             node.bc_front = prop.front_bc;
             node.bc_back = prop.back_bc;
             node.group_type = prop.group_type; // 记录类型
+            node.k_mat = mat.k;
+            node.thickness = prop.thickness;
 
             // 初始温度：如果是 Assigned，这个值将作为永久固定值
             node.T_front = node.T_back = prop.initial_temp;
@@ -447,6 +484,164 @@ bool init_model(const std::string& filename) {
     }
     std::cout << "Nodes: " << g_nodes.size() << std::endl;
     return true;
+}
+
+// 辅助函数：计算点 p 到线段 (v1-v2) 的最短距离的平方
+// 用于计算 Centroid 到 Edge 的垂直距离
+double point_segment_distance_sq(const Vec3& p, const Vec3& v1, const Vec3& v2) {
+    Vec3 ab = v2 - v1;
+    Vec3 ap = p - v1;
+    double len_sq = dot(ab, ab);
+    if (len_sq < 1e-8) return dot(ap, ap); // v1 == v2 (退化边)
+
+    // 投影参数 t
+    double t = dot(ap, ab) / len_sq;
+
+    // 限制 t 在 [0, 1] 范围内 (限制在线段上)
+    // 对于热传导，通常我们需要的是“到无限长直线的垂直距离”还是“到线段的距离”？
+    // 物理上，如果质心投影在边之外，说明网格扭曲很大。
+    // 为了稳健，我们通常允许投影点在线段延伸线上，或者限制在端点。
+    // 这里使用限制在线段上的逻辑，保证距离是物理真实的“最近路程”。
+    if (t < 0.0) t = 0.0;
+    else if (t > 1.0) t = 1.0;
+
+    Vec3 closest = v1 + (ab * t);
+    Vec3 d = p - closest;
+    return dot(d, d);
+}
+
+// ==========================================
+// 全局辅助：存储焊接后的唯一顶点
+// ==========================================
+std::vector<Vec3> g_unique_verts; // 新增：存坐标
+
+void build_topology() {
+    std::cout << "[Topology] Building lateral connections (Advanced Quad Support)..." << std::endl;
+
+    // 全局辅助清理
+    g_unique_verts.clear();
+    for (auto& n : g_nodes) n.neighbors.clear();
+
+    // 1. 顶点焊接 (保持不变)
+    std::map<VertexKey, int> vert_map;
+    auto get_vert_id = [&](const Vec3& v) -> int {
+        VertexKey key = to_key(v);
+        if (vert_map.find(key) == vert_map.end()) {
+            int new_id = (int)g_unique_verts.size();
+            vert_map[key] = new_id;
+            g_unique_verts.push_back(v);
+            return new_id;
+        }
+        return vert_map[key];
+    };
+
+    // 2. 全局边注册 (Edge Registry)
+    // 记录每一条边被哪些 Node 引用过
+    // Map: EdgeKey -> List of Node Indices
+    std::map<EdgeKey, std::vector<int>> edge_registry;
+
+    for (int i = 0; i < g_nodes.size(); ++i) {
+        // ★★★ 修正点1：遍历该 Node 下所有的三角形 ★★★
+        for (const auto& tri : g_nodes[i].geometry_tris) {
+            int id0 = get_vert_id(tri.v0);
+            int id1 = get_vert_id(tri.v1);
+            int id2 = get_vert_id(tri.v2);
+
+            int v[3] = { id0, id1, id2 };
+
+            // 注册该三角形的三条边
+            for (int k = 0; k < 3; ++k) {
+                int a = v[k];
+                int b = v[(k + 1) % 3];
+                if (a > b) std::swap(a, b); // 保证从小到大排序，确保 EdgeKey 唯一
+
+                auto& list = edge_registry[{a, b}];
+                if (list.empty() || list.back() != i) {
+                    list.push_back(i);
+                }
+                // 注意：这里 push 进去的是 Node 的索引 i，而不是三角形的索引
+            }
+        }
+    }
+
+    // 3. 建立连接并过滤内部边
+    int links_count = 0;
+
+    for (auto& kv : edge_registry) {
+        const EdgeKey& edge_key = kv.first;
+        const std::vector<int>& shared_nodes = kv.second;
+
+        // 情况 A: 这条边只出现过 1 次 -> 它是模型的物理边界（边缘），没有邻居。
+        if (shared_nodes.size() != 2) continue;
+
+        // 情况 B: 这条边出现了 2 次（最常见的情况）
+        // 这里有两种可能：
+        // 1. 两个不同的 Node 共享这条边 -> 是我们要的邻居！
+        // 2. 同一个 Node 内部的两个三角形共享这条边（对角线） -> 这是内部边，要忽略！
+
+        // 我们这里只处理 shared_nodes 的前两个。
+        // (如果有 >2 个，说明是非流形几何，比如三片叶子连在一条轴上，暂不处理)
+        int n1 = shared_nodes[0];
+        int n2 = shared_nodes[1];
+
+        // ★★★ 修正点2：过滤内部对角线 ★★★
+        if (n1 == n2) {
+            continue;
+        }
+
+        ThermalNode& node1 = g_nodes[n1];
+        ThermalNode& node2 = g_nodes[n2];
+
+        // 1. 计算真实的接触边长 (保留你的认可)
+        const Vec3& p1 = g_unique_verts[edge_key.v1];
+        const Vec3& p2 = g_unique_verts[edge_key.v2];
+        double L_edge_real = std::sqrt(dot(p1 - p2, p1 - p2));
+        if (L_edge_real < 1e-5) continue;
+
+        // --- 2. ★核心修正★：非均匀网格加权 (Centroid Bias) ---
+        // 不再使用 dist = distance(c1, c2)
+        // 而是使用 dist = dist(c1, edge) + dist(c2, edge)
+        // 这自动处理了大小网格不匹配的问题，也隐含处理了角度问题
+
+        double d1_sq = point_segment_distance_sq(node1.centroid, p1, p2);
+        double d2_sq = point_segment_distance_sq(node2.centroid, p1, p2);
+
+        double d1 = std::sqrt(d1_sq);
+        double d2 = std::sqrt(d2_sq);
+
+        // 有效传热距离 (Total Effective Path Length)
+        double dist_effective = d1 + d2;
+
+        // 安全钳位：防止距离过小 (比如质心恰好在边上)
+        if (dist_effective < 1e-4) dist_effective = 1e-4;
+
+        // 3. 接触面积
+        double t_avg = (node1.thickness + node2.thickness) / 2.0;
+        double A_contact = L_edge_real * t_avg;
+       
+        // ★★★ 关键升级：异质材料导热系数 (调和平均) ★★★
+        // 如果 k1=45(钢), k2=0.04(绝热), 结果约为 0.08 (接近绝热), 这才是对的。
+        // 如果用算术平均 (45+0.04)/2 = 22.5, 绝热层就失效了。
+        double k1 = node1.k_mat;
+        double k2 = node2.k_mat;
+        double k_interface = 0.0;
+
+        if (k1 < EPSILON || k2 < EPSILON) {
+            k_interface = 0.0; // 只要有一方不导热，整体就不导热
+        }
+        else {
+            // 调和平均公式： 2*k1*k2 / (k1+k2)
+            k_interface = (2.0 * k1 * k2) / (k1 + k2);
+        }
+
+        double conductance = (k_interface * A_contact) / dist_effective;
+
+        node1.neighbors.push_back({ n2, conductance });
+        node2.neighbors.push_back({ n1, conductance });
+        links_count++;
+    }
+
+    std::cout << "[Topology] Created " << links_count << " lateral links." << std::endl;
 }
 
 // ==========================================
@@ -571,6 +766,24 @@ void solve_step(double dt, double hour, const Vec3& sun_dir, bool is_steady_init
             sum_G += node.conductance;
             sum_Q += node.conductance * Tb_curr; // 这里的 Tb_curr 是最新迭代值
 
+            // F. 横向导热 (Lateral Conduction)
+            // 逻辑：Q_lat = sum( K_ij * (T_neighbor - T_self) )
+            // 在隐式方程中：
+            // sum_Q += K_ij * T_neighbor
+            // sum_G += K_ij
+
+            for (const auto& link : node.neighbors) {
+                int n_idx = link.neighbor_idx;
+                double K_lat = link.conductance;
+
+                // 获取邻居的最新温度 (使用 Front 温度，因为对于薄壳，横向导热通常看作均温或 Front 层主导)
+                // 也可以更精细：Front 传 Front，Back 传 Back。这里简化为 Front 层横向导热。
+                double T_neighbor = g_nodes[n_idx].T_front_next;
+
+                sum_G += K_lat;
+                sum_Q += K_lat * T_neighbor;
+            }
+
             // >>> 求解 Front 新温度 <<<
             // sum_G * T_new = sum_Q
             node.T_front_next = sum_Q / sum_G;
@@ -682,6 +895,8 @@ int main() {
     // 2. 加载模型 (文件名来自配置)
     if (!init_model(g_config.global.obj_file)) return -1;
 
+    build_topology();
+
     // 3. 加载天气 (文件名来自配置)
     if (!g_weather.load_weather(g_config.global.weather_file)) return -1;
 
@@ -760,902 +975,3 @@ int main() {
     std::cout << "\n[3/3] Done." << std::endl;
     return 0;
 }
-
-/*#include <iostream>
-#include <vector>
-#include <string>
-#include <fstream>
-#include <sstream>
-#include <cmath>
-#include <map>
-#include <algorithm>
-#include <iomanip>
-#include <regex>
-
-// ==========================================
-// 1. 基础数学
-// ==========================================
-const double EPSILON = 1e-6;
-const double SIGMA = 5.67e-8;
-
-struct Vec3 {
-    double x, y, z;
-    Vec3 operator+(const Vec3& v) const { return { x + v.x, y + v.y, z + v.z }; }
-    Vec3 operator-(const Vec3& v) const { return { x - v.x, y - v.y, z - v.z }; }
-    Vec3 operator*(double s) const { return { x * s, y * s, z * s }; }
-    Vec3 operator/(double s) const { return { x / s, y / s, z / s }; }
-};
-double dot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-Vec3 normalize(const Vec3& v) { double len = std::sqrt(dot(v, v)); return len > EPSILON ? v / len : v; }
-Vec3 cross(const Vec3& a, const Vec3& b) { return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }
-
-// ==========================================
-// 2. 天气系统 (升级版：支持 LWIR)
-// ==========================================
-struct WeatherData {
-    double time_hour;
-    double air_temp;
-    double solar;
-    double wind;
-    double lwir; // 新增：长波辐射
-};
-
-class WeatherSystem {
-public:
-    std::vector<WeatherData> data_points;
-
-    bool load_weather(const std::string& filename) {
-        std::ifstream file(filename);
-        if (!file.is_open()) {
-            std::cout << "[Error] Cannot open weather file: " << filename << std::endl;
-            return false;
-        }
-
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        std::string content = buffer.str();
-
-        // 正则清洗
-        try {
-            content = std::regex_replace(content, std::regex("\\[.*?\\]"), " ");
-            content = std::regex_replace(content, std::regex("[A-Za-z]"), " ");
-            content = std::regex_replace(content, std::regex("[:]"), " ");
-        }
-        catch (...) { return false; }
-
-        std::stringstream ss(content);
-        std::vector<double> all_numbers;
-        double val;
-        while (ss >> val) all_numbers.push_back(val);
-
-        // 你的文件其实有 8 列数据 (rainrate 在 header 里有，但数据行好像只有 8 个数)
-        // TIME AIRT SOLAR WIND HUMID CLOUD LWIR WINDIR
-        // 我们按 8 列来读
-        int stride = 8;
-
-        if (all_numbers.size() < stride) {
-            std::cout << "[Error] Not enough data!" << std::endl;
-            return false;
-        }
-
-        double last_raw_time = -1.0;
-        double day_offset = 0.0;
-
-        for (size_t i = 0; i + stride <= all_numbers.size(); i += stride) {
-            double raw_time = all_numbers[i];
-            double airt = all_numbers[i + 1];
-            double solar = all_numbers[i + 2];
-            double wind = all_numbers[i + 3];
-            // HUMID i+4, CLOUD i+5
-            double lwir = all_numbers[i + 6]; // 第7列是 LWIR
-
-            int hh = (int)(raw_time / 100);
-            int mm = (int)(raw_time) % 100;
-            if (hh > 24 || mm >= 60) continue;
-
-            if (last_raw_time >= 0 && raw_time < last_raw_time) day_offset += 24.0;
-            last_raw_time = raw_time;
-
-            double final_hour = hh + mm / 60.0 + day_offset;
-            data_points.push_back({ final_hour, airt, solar, wind, lwir });
-        }
-
-        std::cout << "[Weather] Loaded " << data_points.size() << " records with LWIR support." << std::endl;
-        return true;
-    }
-
-    WeatherData get_weather(double query_hour) {
-        if (data_points.empty()) return { query_hour, 20.0, 0.0, 1.0, 0.0 };
-        if (query_hour <= data_points.front().time_hour) return data_points.front();
-        if (query_hour >= data_points.back().time_hour) return data_points.back();
-
-        for (size_t i = 0; i < data_points.size() - 1; ++i) {
-            if (query_hour >= data_points[i].time_hour && query_hour < data_points[i + 1].time_hour) {
-                const auto& p1 = data_points[i];
-                const auto& p2 = data_points[i + 1];
-                double ratio = (query_hour - p1.time_hour) / (p2.time_hour - p1.time_hour);
-
-                WeatherData res;
-                res.time_hour = query_hour;
-                res.air_temp = p1.air_temp + ratio * (p2.air_temp - p1.air_temp);
-                res.solar = p1.solar + ratio * (p2.solar - p1.solar);
-                res.wind = p1.wind + ratio * (p2.wind - p1.wind);
-                res.lwir = p1.lwir + ratio * (p2.lwir - p1.lwir);
-                return res;
-            }
-        }
-        return data_points.back();
-    }
-};
-
-WeatherSystem g_weather;
-
-// ... (材质、PartMap、Triangle、ThermalNode 等定义保持不变，请保留原来的代码) ...
-// 为节省篇幅，这里省略重复的结构体定义，请直接复用之前的
-// 记得保留: struct Material, MAT_LIB, PART_MAP, Triangle, ThermalNode, g_nodes, ray_intersects_triangle, update_shadows, init_model, is_surface_part
-
-// --------------------------------------------------------
-// 请把之前的 "3. 物理模型", "4. 光线追踪", "5. 模型读取"
-// 这些板块的代码原封不动地粘贴在这里
-// --------------------------------------------------------
-// (这里为了让你能直接运行，我假设你保留了中间部分。
-//  如果需要我再次完整贴出，请告诉我，否则你可以只替换 WeatherSystem 和 solve_step)
-
-struct Material { double k, rho, Cp, thickness; };
-std::map<std::string, Material> MAT_LIB = {
-    {"Steel_Hull",    {45.0, 7850.0, 460.0, 0.015}},
-    {"Engine_Casing", {40.0, 7800.0, 500.0, 0.05}},
-    {"Window_Glass",  {1.0,  2500.0, 840.0, 0.005}},
-    {"Default",       {0.1,  1000.0, 1000.0, 0.01}}
-};
-std::map<std::string, std::string> PART_MAP = {
-    {"Hull", "Steel_Hull"}, {"Hull-Underwater", "Steel_Hull"}, {"Main Deck", "Steel_Hull"},
-    {"Upper Deck", "Steel_Hull"}, {"Aft Cabin", "Steel_Hull"}, {"Foreward Main Deck Room", "Steel_Hull"},
-    {"Forward Upper Deck Room", "Steel_Hull"}, {"Navigation Room", "Steel_Hull"},
-    {"Lower Room Separation", "Steel_Hull"}, {"Middle Room Separation", "Steel_Hull"},
-    {"Navigation Center Ceiling", "Steel_Hull"}, {"Navigation Center Floor", "Steel_Hull"},
-    {"Engine", "Engine_Casing"}, {"Engine Room", "Steel_Hull"},
-    {"Tall Stack", "Engine_Casing"}, {"Short Stack", "Engine_Casing"},
-    {"Tall Stack Exhaust", "Engine_Casing"}, {"Short Stack Exhaust", "Engine_Casing"},
-    {"Navigation Center Windows", "Window_Glass"}
-};
-struct Triangle { Vec3 v0, v1, v2; };
-struct ThermalNode {
-    double T_front, T_back, T_front_next, T_back_next;
-    double mass_node, conductance, area;
-    bool is_engine; std::string part_name;
-    Vec3 centroid, normal; double shadow_factor;
-    std::vector<Triangle> geometry_tris;
-};
-std::vector<ThermalNode> g_nodes;
-bool ray_intersects_triangle(const Vec3& ray_origin, const Vec3& ray_dir, const Triangle& tri) {
-    Vec3 edge1 = tri.v1 - tri.v0; Vec3 edge2 = tri.v2 - tri.v0; Vec3 h = cross(ray_dir, edge2);
-    double a = dot(edge1, h); if (a > -EPSILON && a < EPSILON) return false;
-    double f = 1.0 / a; Vec3 s = ray_origin - tri.v0; double u = f * dot(s, h);
-    if (u < 0.0 || u > 1.0) return false; Vec3 q = cross(s, edge1); double v = f * dot(ray_dir, q);
-    if (v < 0.0 || u + v > 1.0) return false; double t = f * dot(edge2, q); return t > EPSILON;
-}
-void update_shadows(const Vec3& sun_dir) {
-    Vec3 ray_dir = normalize(sun_dir); const double BIAS = 0.05;
-#pragma omp parallel for 
-    for (int i = 0; i < g_nodes.size(); ++i) {
-        ThermalNode& receiver = g_nodes[i];
-        Vec3 face_normal = receiver.normal;
-        if (dot(receiver.normal, ray_dir) < 0.0) face_normal = receiver.normal * -1.0;
-        Vec3 origin = receiver.centroid + (face_normal * BIAS);
-        bool blocked = false;
-        for (int j = 0; j < g_nodes.size(); ++j) {
-            if (i == j) continue;
-            for (const auto& tri : g_nodes[j].geometry_tris) {
-                if (ray_intersects_triangle(origin, ray_dir, tri)) { blocked = true; break; }
-            } if (blocked) break;
-        } receiver.shadow_factor = blocked ? 0.0 : 1.0;
-    }
-}
-bool init_model(const std::string& filename) {
-    std::ifstream file(filename); if (!file.is_open()) return false;
-    std::vector<Vec3> temp_verts; std::string line, group = "Default";
-    std::cout << "Loading model..." << std::endl;
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue; std::stringstream ss(line); std::string type; ss >> type;
-        if (type == "v") { double x, y, z; ss >> x >> y >> z; temp_verts.push_back({ x, y, z }); }
-        else if (type == "g") { std::string temp; std::getline(ss, temp); size_t first = temp.find_first_not_of(' '); group = (first != std::string::npos) ? temp.substr(first) : "Default"; }
-        else if (type == "f") {
-            std::vector<int> idxs; int idx; while (ss >> idx) idxs.push_back(idx - 1); if (idxs.size() < 3) continue;
-            std::vector<Triangle> tris; Vec3 v0 = temp_verts[idxs[0]], v1 = temp_verts[idxs[1]], v2 = temp_verts[idxs[2]];
-            tris.push_back({ v0, v1, v2 }); double area = 0.5 * std::sqrt(dot(cross(v1 - v0, v2 - v0), cross(v1 - v0, v2 - v0)));
-            if (idxs.size() == 4) { Vec3 v3 = temp_verts[idxs[3]]; tris.push_back({ v0, v2, v3 }); area += 0.5 * std::sqrt(dot(cross(v2 - v0, v3 - v0), cross(v2 - v0, v3 - v0))); }
-            if (area < 1e-6) continue;
-            std::string mat_name = PART_MAP.count(group) ? PART_MAP[group] : "Default"; Material mat = MAT_LIB[mat_name];
-            ThermalNode node; node.area = area; node.part_name = group; node.is_engine = (group.find("Engine") != std::string::npos); node.geometry_tris = tris;
-            Vec3 center_sum = { 0,0,0 }; for (auto& t : tris) center_sum = center_sum + t.v0 + t.v1 + t.v2; node.centroid = center_sum / (double)(tris.size() * 3);
-            node.normal = normalize(cross(tris[0].v1 - tris[0].v0, tris[0].v2 - tris[0].v0));
-            double total_mass = area * mat.thickness * mat.rho; node.mass_node = (total_mass * mat.Cp) / 2.0; node.conductance = (mat.k * area) / mat.thickness;
-            node.T_front = node.T_back = 20.0; node.shadow_factor = 1.0; g_nodes.push_back(node);
-        }
-    } std::cout << "Nodes: " << g_nodes.size() << std::endl; return true;
-}
-bool is_surface_part(const std::string& name) {
-    const std::vector<std::string> internals = { "Engine", "Engine Room", "Separation", "Ceiling", "Floor" };
-    for (const auto& k : internals) if (name.find(k) != std::string::npos) return false; return true;
-}
-
-// ==========================================
-// 6. 核心求解函数 (升级版：智能辐射策略)
-// ==========================================
-void solve_step(double dt, double hour, const Vec3& sun_dir, bool is_steady_init = false) {
-    WeatherData w = g_weather.get_weather(hour);
-
-    // ★★★ 智能辐射策略 ★★★
-    // 如果文件里的 LWIR 是 0 (数据缺失)，则使用 T_sky 估算模型
-    // 如果 LWIR 有效 (>10)，则使用 LWIR 精确模型
-    bool use_lwir_data = (w.lwir > 10.0);
-
-    double T_sky_K = 0.0;
-    if (!use_lwir_data) {
-        T_sky_K = (w.air_temp + 273.15) * 0.9; // 备用方案
-    }
-
-    double engine_flux = (hour >= 8.0 && hour <= 18.0) ? 2000.0 : 0.0;
-    if (is_steady_init) engine_flux = 0.0;
-
-#pragma omp parallel for
-    for (int i = 0; i < g_nodes.size(); ++i) {
-        ThermalNode& node = g_nodes[i];
-        double Tf = node.T_front;
-        double Tb = node.T_back;
-
-        // 太阳
-        double cos_theta = std::abs(dot(node.normal, normalize(sun_dir)));
-        double Q_sun = w.solar * node.area * 0.7 * node.shadow_factor * cos_theta;
-
-        // 对流
-        double h_conv = 10.0 + 3.0 * w.wind;
-        double Q_conv = h_conv * node.area * (w.air_temp - Tf);
-
-        // ★★★ 辐射计算 (二选一) ★★★
-        double Q_rad = 0.0;
-        if (use_lwir_data) {
-            // 方案 A: 使用文件中的 LWIR
-            // 净辐射 = 吸收的LWIR - 发射的LWIR
-            // Q_net = epsilon * A * (LWIR - sigma * T_surf^4)
-            Q_rad = 0.9 * node.area * (w.lwir - SIGMA * std::pow(Tf + 273.15, 4));
-        }
-        else {
-            // 方案 B: 估算 T_sky
-            // Q_net = epsilon * sigma * A * (T_sky^4 - T_surf^4)
-            Q_rad = 0.9 * SIGMA * node.area * (std::pow(T_sky_K, 4) - std::pow(Tf + 273.15, 4));
-        }
-
-        // 导热
-        double Q_cond = node.conductance * (Tb - Tf);
-
-        double eff_mass = node.mass_node;
-        double dT_f = (Q_sun + Q_conv + Q_rad + Q_cond) * dt / eff_mass;
-
-        double Q_gen = node.is_engine ? (engine_flux * node.area) : 0.0;
-        double Q_conv_in = 5.0 * node.area * ((w.air_temp + 5.0) - Tb);
-        double dT_b = (Q_gen + Q_conv_in - Q_cond) * dt / eff_mass;
-
-        if (std::isnan(dT_f) || std::isinf(dT_f)) dT_f = 0.0;
-        if (std::isnan(dT_b) || std::isinf(dT_b)) dT_b = 0.0;
-
-        node.T_front_next = Tf + dT_f;
-        node.T_back_next = Tb + dT_b;
-    }
-
-    for (auto& node : g_nodes) {
-        node.T_front = node.T_front_next;
-        node.T_back = node.T_back_next;
-    }
-}
-
-// ==========================================
-// 主程序
-// ==========================================
-int main() {
-    if (!init_model("chuan.tai")) return -1;
-    if (!g_weather.load_weather("weather.txt")) return -1; // 这里的读取已经很强壮了
-
-    std::vector<int> surf_indices;
-    for (int i = 0; i < g_nodes.size(); ++i) if (is_surface_part(g_nodes[i].part_name)) surf_indices.push_back(i);
-
-    std::ofstream out_csv("results_final_upgraded.csv");
-    out_csv << "Time(h)";
-    for (int idx : surf_indices) out_csv << "," << g_nodes[idx].part_name << "_N" << idx;
-    out_csv << "\n";
-
-    double start_h = 6.0;
-    double end_h = 22.0;
-    double dt = 0.5;
-
-    // 1. 稳态初始化
-    std::cout << "\n[1/3] Steady-State Initialization at " << start_h << ":00..." << std::endl;
-    double start_sun_ang = 3.14159 * (start_h - 6.0) / 12.0;
-    Vec3 start_sun = { std::cos(start_sun_ang), 0.5 * std::cos(start_sun_ang), std::sin(start_sun_ang) };
-    if (g_weather.get_weather(start_h).solar <= 1.0) start_sun = { 0,0,-1 };
-
-    update_shadows(start_sun); // 初始阴影
-
-    // 跑 20000 步让它冷却下来
-    for (int k = 0; k < 20000; k++) {
-        solve_step(dt, start_h, start_sun, true);
-    }
-    std::cout << " -> Initialized T_Deck: " << g_nodes[surf_indices[0]].T_front << " C" << std::endl;
-
-    // 2. 瞬态仿真
-    std::cout << "\n[2/3] Transient Simulation..." << std::endl;
-    int steps = (int)((end_h - start_h) * 3600.0 / dt);
-    double last_output = -9999;
-    double output_interval = 20.0 * 60.0;
-
-    for (int i = 0; i <= steps; i++) {
-        double current_time = i * dt;
-        double hour = start_h + (current_time / 3600.0);
-
-        double sun_ang = 3.14159 * (hour - 6.0) / 12.0;
-        Vec3 sun_dir = { std::cos(sun_ang), 0.5 * std::cos(sun_ang), std::sin(sun_ang) };
-        if (g_weather.get_weather(hour).solar <= 1.0) sun_dir = { 0,0,-1 };
-
-        if (i % (int)(900 / dt) == 0 && hour <= 19.0) update_shadows(sun_dir);
-
-        solve_step(dt, hour, sun_dir, false);
-
-        if (current_time - last_output >= output_interval - 0.1 || i == 0) {
-            out_csv << std::fixed << std::setprecision(2) << hour;
-            for (int idx : surf_indices) out_csv << "," << g_nodes[idx].T_front;
-            out_csv << "\n";
-            last_output = current_time;
-            std::cout << "\rProgress: " << std::fixed << std::setprecision(1) << (double)i / steps * 100.0 << "%" << std::flush;
-        }
-    }
-
-    std::cout << "\n[3/3] Done." << std::endl;
-    return 0;
-}*/
-
-/*#include <iostream>
-#include <vector>
-#include <string>
-#include <fstream>
-#include <sstream>
-#include <cmath>
-#include <map>
-#include <algorithm>
-#include <iomanip>
-#include <omp.h> // 尝试引入 OpenMP，如果没有配置也无妨
-#include <regex>
-
-// ==========================================
-// 1. 基础数学结构
-// ==========================================
-const double EPSILON = 1e-6;
-const double SIGMA = 5.67e-8;
-
-struct Vec3 {
-    double x, y, z;
-    Vec3 operator+(const Vec3& v) const { return { x + v.x, y + v.y, z + v.z }; }
-    Vec3 operator-(const Vec3& v) const { return { x - v.x, y - v.y, z - v.z }; }
-    Vec3 operator*(double s) const { return { x * s, y * s, z * s }; }
-    Vec3 operator/(double s) const { return { x / s, y / s, z / s }; }
-};
-
-double dot(const Vec3& a, const Vec3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
-Vec3 normalize(const Vec3& v) { double len = std::sqrt(dot(v, v)); return len > EPSILON ? v / len : v; }
-Vec3 cross(const Vec3& a, const Vec3& b) { return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }
-
-// ==========================================
-// 2. 天气系统 (重型清洗版 - 解决格式错乱)
-// ==========================================
-struct WeatherData {
-    double time_hour;
-    double air_temp;
-    double solar;
-    double wind;
-    double lwir;
-};
-
-class WeatherSystem {
-public:
-    std::vector<WeatherData> data_points;
-
-    bool load_weather(const std::string& filename) {
-        std::ifstream file(filename);
-        if (!file.is_open()) {
-            std::cout << "[Error] Cannot open weather file: " << filename << std::endl;
-            return false;
-        }
-
-        // 1. 读取整个文件到字符串
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        std::string content = buffer.str();
-
-        std::cout << "[Weather] File read. Size: " << content.size() << " chars." << std::endl;
-
-        // 2. 找到数据起始点 (TIME 之后)
-        // 这样可以跳过文件开头的 "04" 这种无关数字
-        size_t data_start = content.find("TIME");
-        if (data_start != std::string::npos) {
-            content = content.substr(data_start);
-        }
-
-        // 3. 正则清洗 (这是最关键的一步)
-        try {
-            // A. 去除 这种标签
-            std::regex re_source("\\[.*?\\]");
-            content = std::regex_replace(content, re_source, " ");
-
-            // B. 去除所有字母 (TIME, AIRT 等标题)
-            std::regex re_letters("[A-Za-z]");
-            content = std::regex_replace(content, re_letters, " ");
-
-            // C. 将冒号等标点替换为空格 (防止 09:20 读错)
-            std::regex re_punct("[:]");
-            content = std::regex_replace(content, re_punct, " ");
-        }
-        catch (const std::regex_error& e) {
-            std::cout << "[Error] Regex failed: " << e.what() << std::endl;
-            return false;
-        }
-
-        // 4. 流式读取纯数字
-        std::stringstream ss(content);
-        std::vector<double> all_numbers;
-        double val;
-        while (ss >> val) {
-            all_numbers.push_back(val);
-        }
-
-        std::cout << "[Weather] Extracted " << all_numbers.size() << " numbers." << std::endl;
-
-        // 5. 按列重组 (你的文件是 8 列数据)
-        // 0:TIME, 1:AIRT, 2:SOLAR, 3:WIND, 4:HUMID, 5:CLOUD, 6:LWIR, 7:WINDIR(or Rain)
-        int stride = 8;
-
-        if (all_numbers.size() < stride) {
-            std::cout << "[Error] Not enough data found!" << std::endl;
-            return false;
-        }
-
-        double last_raw_time = -1.0;
-        double day_offset = 0.0;
-
-        for (size_t i = 0; i + stride <= all_numbers.size(); i += stride) {
-            double raw_time = all_numbers[i];     // HHMM
-            double airt = all_numbers[i + 1];
-            double solar = all_numbers[i + 2];
-            double wind = all_numbers[i + 3];
-            double lwir = all_numbers[i + 6];
-            // 格式解析 HHMM -> Hour
-            int hh = (int)(raw_time / 100);
-            int mm = (int)(raw_time) % 100;
-
-            // 基本校验
-            if (hh > 24 || mm >= 60) continue; // 跳过非法时间
-
-            // 处理跨天 (2355 -> 0000)
-            if (last_raw_time >= 0 && raw_time < last_raw_time) {
-                // 如果时间突然变小 (且不是一点点波动)，说明过了一天
-                // 比如 2355 -> 0000
-                day_offset += 24.0;
-            }
-            last_raw_time = raw_time;
-
-            double final_hour = hh + mm / 60.0 + day_offset;
-
-            data_points.push_back({ final_hour, airt, solar, wind, lwir });
-        }
-
-        std::cout << "[Weather] Successfully parsed " << data_points.size() << " time steps." << std::endl;
-        if (!data_points.empty()) {
-            std::cout << "          Range: " << data_points.front().time_hour << "h -> "
-                << data_points.back().time_hour << "h" << std::endl;
-        }
-
-        return true;
-    }
-
-    WeatherData get_weather(double query_hour) {
-        if (data_points.empty()) return { query_hour, 20.0, 0.0, 1.0 };
-
-        if (query_hour <= data_points.front().time_hour) return data_points.front();
-        if (query_hour >= data_points.back().time_hour) return data_points.back();
-
-        // 线性查找插值
-        for (size_t i = 0; i < data_points.size() - 1; ++i) {
-            if (query_hour >= data_points[i].time_hour && query_hour < data_points[i + 1].time_hour) {
-                const auto& p1 = data_points[i];
-                const auto& p2 = data_points[i + 1];
-
-                double ratio = (query_hour - p1.time_hour) / (p2.time_hour - p1.time_hour);
-
-                WeatherData res;
-                res.time_hour = query_hour;
-                res.air_temp = p1.air_temp + ratio * (p2.air_temp - p1.air_temp);
-                res.solar = p1.solar + ratio * (p2.solar - p1.solar);
-                res.wind = p1.wind + ratio * (p2.wind - p1.wind);
-                res.lwir = p1.lwir + ratio * (p2.lwir - p1.lwir);
-                return res;
-            }
-        }
-        return data_points.back();
-    }
-};
-
-WeatherSystem g_weather;
-/*
-struct WeatherData {
-    double time_hour;
-    double air_temp;
-    double solar;
-    double wind;
-    double lwir; // 新增：长波辐射
-};
-
-class WeatherSystem {
-public:
-    std::vector<WeatherData> data_points;
-
-    bool load_weather(const std::string& filename) {
-        std::ifstream file(filename);
-        if (!file.is_open()) {
-            std::cout << "[Error] Cannot open weather file: " << filename << std::endl;
-            return false;
-        }
-
-        std::stringstream buffer;
-        buffer << file.rdbuf();
-        std::string content = buffer.str();
-
-        // 正则清洗
-        try {
-            content = std::regex_replace(content, std::regex("\\[.*?\\]"), " ");
-            content = std::regex_replace(content, std::regex("[A-Za-z]"), " ");
-            content = std::regex_replace(content, std::regex("[:]"), " ");
-        }
-        catch (...) { return false; }
-
-        std::stringstream ss(content);
-        std::vector<double> all_numbers;
-        double val;
-        while (ss >> val) all_numbers.push_back(val);
-
-        // 你的文件其实有 8 列数据 (rainrate 在 header 里有，但数据行好像只有 8 个数)
-        // TIME AIRT SOLAR WIND HUMID CLOUD LWIR WINDIR
-        // 我们按 8 列来读
-        int stride = 8;
-
-        if (all_numbers.size() < stride) {
-            std::cout << "[Error] Not enough data!" << std::endl;
-            return false;
-        }
-
-        double last_raw_time = -1.0;
-        double day_offset = 0.0;
-
-        for (size_t i = 0; i + stride <= all_numbers.size(); i += stride) {
-            double raw_time = all_numbers[i];
-            double airt = all_numbers[i + 1];
-            double solar = all_numbers[i + 2];
-            double wind = all_numbers[i + 3];
-            // HUMID i+4, CLOUD i+5
-            double lwir = all_numbers[i + 6]; // 第7列是 LWIR
-
-            int hh = (int)(raw_time / 100);
-            int mm = (int)(raw_time) % 100;
-            if (hh > 24 || mm >= 60) continue;
-
-            if (last_raw_time >= 0 && raw_time < last_raw_time) day_offset += 24.0;
-            last_raw_time = raw_time;
-
-            double final_hour = hh + mm / 60.0 + day_offset;
-            data_points.push_back({ final_hour, airt, solar, wind, lwir });
-        }
-
-        std::cout << "[Weather] Loaded " << data_points.size() << " records with LWIR support." << std::endl;
-        return true;
-    }
-
-    WeatherData get_weather(double query_hour) {
-        if (data_points.empty()) return { query_hour, 20.0, 0.0, 1.0, 0.0 };
-        if (query_hour <= data_points.front().time_hour) return data_points.front();
-        if (query_hour >= data_points.back().time_hour) return data_points.back();
-
-        for (size_t i = 0; i < data_points.size() - 1; ++i) {
-            if (query_hour >= data_points[i].time_hour && query_hour < data_points[i + 1].time_hour) {
-                const auto& p1 = data_points[i];
-                const auto& p2 = data_points[i + 1];
-                double ratio = (query_hour - p1.time_hour) / (p2.time_hour - p1.time_hour);
-
-                WeatherData res;
-                res.time_hour = query_hour;
-                res.air_temp = p1.air_temp + ratio * (p2.air_temp - p1.air_temp);
-                res.solar = p1.solar + ratio * (p2.solar - p1.solar);
-                res.wind = p1.wind + ratio * (p2.wind - p1.wind);
-                res.lwir = p1.lwir + ratio * (p2.lwir - p1.lwir);
-                return res;
-            }
-        }
-        return data_points.back();
-    }
-};
-WeatherSystem g_weather;
-// ==========================================
-// 3. 物理模型与节点
-// ==========================================
-struct Material { double k, rho, Cp, thickness; };
-std::map<std::string, Material> MAT_LIB = {
-    {"Steel_Hull",    {45.0, 7850.0, 460.0, 0.015}},
-    {"Engine_Casing", {40.0, 7800.0, 500.0, 0.05}},
-    {"Window_Glass",  {1.0,  2500.0, 840.0, 0.005}},
-    {"Default",       {0.1,  1000.0, 1000.0, 0.01}}
-};
-
-std::map<std::string, std::string> PART_MAP = {
-    {"Hull", "Steel_Hull"}, {"Hull-Underwater", "Steel_Hull"}, {"Main Deck", "Steel_Hull"},
-    {"Upper Deck", "Steel_Hull"}, {"Aft Cabin", "Steel_Hull"}, {"Foreward Main Deck Room", "Steel_Hull"},
-    {"Forward Upper Deck Room", "Steel_Hull"}, {"Navigation Room", "Steel_Hull"},
-    {"Lower Room Separation", "Steel_Hull"}, {"Middle Room Separation", "Steel_Hull"},
-    {"Navigation Center Ceiling", "Steel_Hull"}, {"Navigation Center Floor", "Steel_Hull"},
-    {"Engine", "Engine_Casing"}, {"Engine Room", "Steel_Hull"},
-    {"Tall Stack", "Engine_Casing"}, {"Short Stack", "Engine_Casing"},
-    {"Tall Stack Exhaust", "Engine_Casing"}, {"Short Stack Exhaust", "Engine_Casing"},
-    {"Navigation Center Windows", "Window_Glass"}
-};
-
-struct Triangle { Vec3 v0, v1, v2; };
-struct ThermalNode {
-    double T_front, T_back;
-    double T_front_next, T_back_next;
-    double mass_node, conductance, area;
-    bool is_engine;
-    std::string part_name;
-    Vec3 centroid, normal;
-    double shadow_factor;
-    std::vector<Triangle> geometry_tris;
-};
-
-std::vector<ThermalNode> g_nodes;
-
-// ==========================================
-// 4. 光线追踪 (带迎光修正)
-// ==========================================
-bool ray_intersects_triangle(const Vec3& ray_origin, const Vec3& ray_dir, const Triangle& tri) {
-    Vec3 edge1 = tri.v1 - tri.v0;
-    Vec3 edge2 = tri.v2 - tri.v0;
-    Vec3 h = cross(ray_dir, edge2);
-    double a = dot(edge1, h);
-    if (a > -EPSILON && a < EPSILON) return false;
-    double f = 1.0 / a;
-    Vec3 s = ray_origin - tri.v0;
-    double u = f * dot(s, h);
-    if (u < 0.0 || u > 1.0) return false;
-    Vec3 q = cross(s, edge1);
-    double v = f * dot(ray_dir, q);
-    if (v < 0.0 || u + v > 1.0) return false;
-    double t = f * dot(edge2, q);
-    return t > EPSILON;
-}
-
-void update_shadows(const Vec3& sun_dir) {
-    Vec3 ray_dir = normalize(sun_dir);
-    const double BIAS = 0.05;
-
-    // 如果没有 OpenMP 环境，这行会被忽略，不影响运行
-#pragma omp parallel for 
-    for (int i = 0; i < g_nodes.size(); ++i) {
-        ThermalNode& receiver = g_nodes[i];
-
-        // 迎光面修正
-        Vec3 face_normal = receiver.normal;
-        if (dot(receiver.normal, ray_dir) < 0.0) face_normal = receiver.normal * -1.0;
-
-        Vec3 origin = receiver.centroid + (face_normal * BIAS);
-
-        bool blocked = false;
-        for (int j = 0; j < g_nodes.size(); ++j) {
-            if (i == j) continue;
-            for (const auto& tri : g_nodes[j].geometry_tris) {
-                if (ray_intersects_triangle(origin, ray_dir, tri)) {
-                    blocked = true; break;
-                }
-            }
-            if (blocked) break;
-        }
-        receiver.shadow_factor = blocked ? 0.0 : 1.0;
-    }
-}
-
-// ==========================================
-// 5. 模型读取
-// ==========================================
-bool init_model(const std::string& filename) {
-    std::ifstream file(filename);
-    if (!file.is_open()) return false;
-    std::vector<Vec3> temp_verts;
-    std::string line, group = "Default";
-    std::cout << "Loading model..." << std::endl;
-
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        std::stringstream ss(line);
-        std::string type; ss >> type;
-        if (type == "v") {
-            double x, y, z; ss >> x >> y >> z;
-            temp_verts.push_back({ x, y, z });
-        }
-        else if (type == "g") {
-            std::string temp; std::getline(ss, temp);
-            size_t first = temp.find_first_not_of(' ');
-            group = (first != std::string::npos) ? temp.substr(first) : "Default";
-        }
-        else if (type == "f") {
-            std::vector<int> idxs; int idx;
-            while (ss >> idx) idxs.push_back(idx - 1);
-            if (idxs.size() < 3) continue;
-
-            std::vector<Triangle> tris;
-            Vec3 v0 = temp_verts[idxs[0]], v1 = temp_verts[idxs[1]], v2 = temp_verts[idxs[2]];
-            tris.push_back({ v0, v1, v2 });
-            double area = 0.5 * std::sqrt(dot(cross(v1 - v0, v2 - v0), cross(v1 - v0, v2 - v0)));
-            if (idxs.size() == 4) {
-                Vec3 v3 = temp_verts[idxs[3]];
-                tris.push_back({ v0, v2, v3 });
-                area += 0.5 * std::sqrt(dot(cross(v2 - v0, v3 - v0), cross(v2 - v0, v3 - v0)));
-            }
-            if (area < 1e-6) continue;
-
-            std::string mat_name = PART_MAP.count(group) ? PART_MAP[group] : "Default";
-            Material mat = MAT_LIB[mat_name];
-            ThermalNode node;
-            node.area = area; node.part_name = group;
-            node.is_engine = (group.find("Engine") != std::string::npos);
-            node.geometry_tris = tris;
-
-            Vec3 center_sum = { 0,0,0 }; for (auto& t : tris) center_sum = center_sum + t.v0 + t.v1 + t.v2;
-            node.centroid = center_sum / (double)(tris.size() * 3);
-            node.normal = normalize(cross(tris[0].v1 - tris[0].v0, tris[0].v2 - tris[0].v0));
-
-            double total_mass = area * mat.thickness * mat.rho;
-            node.mass_node = (total_mass * mat.Cp) / 2.0;
-            node.conductance = (mat.k * area) / mat.thickness;
-
-            node.T_front = node.T_back = 20.0; // 这里的20.0会被稳态计算覆盖
-            node.shadow_factor = 1.0;
-            g_nodes.push_back(node);
-        }
-    }
-    std::cout << "Nodes: " << g_nodes.size() << std::endl;
-    return true;
-}
-
-bool is_surface_part(const std::string& name) {
-    const std::vector<std::string> internals = { "Engine", "Engine Room", "Separation", "Ceiling", "Floor" };
-    for (const auto& k : internals) if (name.find(k) != std::string::npos) return false;
-    return true;
-}
-
-// ==========================================
-// 6. 核心求解函数 (支持稳态初始化)
-// ==========================================
-void solve_step(double dt, double hour, const Vec3& sun_dir, bool is_steady_init = false) {
-    WeatherData w = g_weather.get_weather(hour);
-    double T_sky_K = (w.air_temp + 273.15) * 0.9;
-
-    // 引擎工况: 8:00 - 18:00 开启
-    double engine_flux = (hour >= 8.0 && hour <= 18.0) ? 2000.0 : 0.0;
-    if (is_steady_init) engine_flux = 0.0; // 初始化时引擎关闭
-
-#pragma omp parallel for
-    for (int i = 0; i < g_nodes.size(); ++i) {
-        ThermalNode& node = g_nodes[i];
-        double Tf = node.T_front;
-        double Tb = node.T_back;
-
-        // 太阳热负荷
-        double cos_theta = std::abs(dot(node.normal, normalize(sun_dir)));
-        double Q_sun = w.solar * node.area * 0.7 * node.shadow_factor * cos_theta;
-
-        // 对流 (根据风速调整h)
-        double h_conv = 10.0 + 3.0 * w.wind;
-        double Q_conv = h_conv * node.area * (w.air_temp - Tf);
-
-        // 辐射冷却
-        double Q_rad = 0.9 * SIGMA * node.area * (std::pow(T_sky_K, 4) - std::pow(Tf + 273.15, 4));
-
-        // 导热
-        double Q_cond = node.conductance * (Tb - Tf);
-
-        // 稳态加速系数: 如果是初始化，极大减小热容以快速收敛
-        double eff_mass = node.mass_node;
-
-        double dT_f = (Q_sun + Q_conv + Q_rad + Q_cond) * dt / eff_mass;
-
-        double Q_gen = node.is_engine ? (engine_flux * node.area) : 0.0;
-        double Q_conv_in = 5.0 * node.area * ((w.air_temp + 5.0) - Tb);
-        double dT_b = (Q_gen + Q_conv_in - Q_cond) * dt / eff_mass;
-
-        node.T_front_next = Tf + dT_f;
-        node.T_back_next = Tb + dT_b;
-    }
-
-    for (auto& node : g_nodes) {
-        node.T_front = node.T_front_next;
-        node.T_back = node.T_back_next;
-    }
-}
-
-// ==========================================
-// 主程序
-// ==========================================
-int main() {
-    if (!init_model("chuan.tai")) return -1;
-    if (!g_weather.load_weather("weather.txt")) {
-        std::cout << "Error: weather.txt not found!" << std::endl;
-        return -1;
-    }
-
-    // 筛选表面节点
-    std::vector<int> surf_indices;
-    for (int i = 0; i < g_nodes.size(); ++i) if (is_surface_part(g_nodes[i].part_name)) surf_indices.push_back(i);
-
-    std::ofstream out_csv("results_taitherm_style.csv");
-    out_csv << "Time(h)";
-    for (int idx : surf_indices) out_csv << "," << g_nodes[idx].part_name << "_N" << idx;
-    out_csv << "\n";
-
-    double start_h = 6.0;
-    double end_h = 22.0; // 模拟到晚上 22点
-    double dt = 0.5;
-
-    // --- 1. 稳态初始化 (在 6:00 时刻) ---
-    std::cout << "\n[1/3] Steady-State Initialization at " << start_h << ":00..." << std::endl;
-
-    // 计算初始时刻光照
-    double start_sun_ang = 3.14159 * (start_h - 6.0) / 12.0;
-    Vec3 start_sun = { std::cos(start_sun_ang), 0.5 * std::cos(start_sun_ang), std::sin(start_sun_ang) };
-    if (g_weather.get_weather(start_h).solar <= 1.0) start_sun = { 0,0,-1 };
-    update_shadows(start_sun);
-
-    // 增加步数，并减小初始化时的虚拟步长，确保绝对稳定
-    // 跑 20000 步，每步 0.5秒 = 模拟 10000秒 (约2.7小时) 的物理时间，足够冷却了
-    for (int k = 0; k < 20000; k++) {
-        solve_step(0.5, start_h, start_sun, true);
-    }
-    std::cout << " -> Initialized T_Deck to approx: " << g_nodes[surf_indices[0]].T_front << " C" << std::endl;
-
-    // --- 2. 瞬态仿真 ---
-    std::cout << "\n[2/3] Transient Simulation (" << start_h << " - " << end_h << "h)..." << std::endl;
-    int steps = (int)((end_h - start_h) * 3600.0 / dt);
-    double last_output = -9999;
-    double output_interval = 20.0 * 60.0; // 20分钟输出一次
-
-    for (int i = 0; i <= steps; i++) {
-        double current_time = i * dt;
-        double hour = start_h + (current_time / 3600.0);
-
-        // 太阳位置
-        double sun_ang = 3.14159 * (hour - 6.0) / 12.0;
-        Vec3 sun_dir = { std::cos(sun_ang), 0.5 * std::cos(sun_ang), std::sin(sun_ang) };
-        if (g_weather.get_weather(hour).solar <= 1.0) sun_dir = { 0,0,-1 };
-
-        // 更新阴影 (每15分钟)
-        if (i % (int)(900 / dt) == 0 && hour <= 19.0) update_shadows(sun_dir);
-
-        // 求解
-        solve_step(dt, hour, sun_dir, false);
-
-        // 输出
-        if (current_time - last_output >= output_interval - 0.1 || i == 0) {
-            out_csv << std::fixed << std::setprecision(2) << hour;
-            for (int idx : surf_indices) out_csv << "," << g_nodes[idx].T_front;
-            out_csv << "\n";
-            last_output = current_time;
-            std::cout << "\rProgress: " << std::fixed << std::setprecision(1) << (double)i / steps * 100.0 << "%  (Time: " << hour << "h)" << std::flush;
-        }
-    }
-
-    std::cout << "\n[3/3] Done. Saved to 'results_taitherm_style.csv'." << std::endl;
-    return 0;
-}*/
