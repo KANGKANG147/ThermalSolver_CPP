@@ -18,5 +18,31 @@
     <ClCompile Include="main.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="WeatherSystem.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ConfigSystem.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="ThermalSolver.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="MathUtils.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="CoreTypes.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="WeatherSystem.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ConfigSystem.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="ThermalSolver.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
