@@ -127,12 +127,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="BVH.cpp" />
     <ClCompile Include="ConfigSystem.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="ThermalSolver.cpp" />
     <ClCompile Include="WeatherSystem.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="BVH.h" />
     <ClInclude Include="ConfigSystem.h" />
     <ClInclude Include="CoreTypes.h" />
     <ClInclude Include="MathUtils.h" />

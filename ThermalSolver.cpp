@@ -176,24 +176,28 @@ void ThermalSolver::build_topology() {
     }
 
     std::cout << "[Topology] Created " << links_count << " lateral links." << std::endl;
+    
+    // --- 构建 BVH ---
+    bvh.build(nodes);
 }
 
 void ThermalSolver::update_shadows(const Vec3& sun_dir) {
     Vec3 ray_dir = normalize(sun_dir); 
-    const double BIAS = 0.05;
-#pragma omp parallel for 
+    const double BIAS = 0.05; // 偏移量，防止自己遮挡自己
+    const double MAX_DIST = 1.0e20; // 太阳视为无限远
+    
+    // 开启 OpenMP 并行计算，BVH 是只读的，所以并行是安全的
+    #pragma omp parallel for 
     for (int i = 0; i < nodes.size(); ++i) {
         ThermalNode& receiver = nodes[i];
         Vec3 face_normal = receiver.normal;
         if (dot(receiver.normal, ray_dir) < 0.0) face_normal = receiver.normal * -1.0;
         Vec3 origin = receiver.centroid + (face_normal * BIAS);
-        bool blocked = false;
-        for (int j = 0; j < nodes.size(); ++j) {
-            if (i == j) continue;
-            for (const auto& tri : nodes[j].geometry_tris) {
-                if (ray_intersects_triangle(origin, ray_dir, tri)) { blocked = true; break; }
-            } if (blocked) break;
-        } receiver.shadow_factor = blocked ? 0.0 : 1.0;
+        
+        // --- BVH 加速查询 ---
+        // 参数：起点, 方向, 最大距离, 排除的ID(自己)
+        bool blocked = bvh.intersect_shadow(origin, ray_dir, MAX_DIST, i);
+        receiver.shadow_factor = blocked ? 0.0 : 1.0;
     }
 }
 
@@ -342,15 +346,6 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
         node.T_front = node.T_front_next;
         node.T_back = node.T_back_next;
     }
-}
-
-// ... 复制 calc_h_rad, get_convection_params, ray_intersects_triangle 的实现 ...
-bool ThermalSolver::ray_intersects_triangle(const Vec3& ray_origin, const Vec3& ray_dir, const Triangle& tri) {
-    Vec3 edge1 = tri.v1 - tri.v0; Vec3 edge2 = tri.v2 - tri.v0; Vec3 h = cross(ray_dir, edge2);
-    double a = dot(edge1, h); if (a > -EPSILON && a < EPSILON) return false;
-    double f = 1.0 / a; Vec3 s = ray_origin - tri.v0; double u = f * dot(s, h);
-    if (u < 0.0 || u > 1.0) return false; Vec3 q = cross(s, edge1); double v = f * dot(ray_dir, q);
-    if (v < 0.0 || u + v > 1.0) return false; double t = f * dot(edge2, q); return t > EPSILON;
 }
 
 // ==========================================

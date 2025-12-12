@@ -2,10 +2,12 @@
 #include <vector>
 #include "CoreTypes.h"
 #include "WeatherSystem.h" 
+#include "BVH.h"
 
 class ThermalSolver {
 public:
     std::vector<ThermalNode> nodes; // 所有的热节点
+    BVHAccel bvh;
 
     // 构建拓扑连接（顶点焊接、横向导热）
     void build_topology();
@@ -20,5 +22,4 @@ private:
     // 内部辅助函数
     std::pair<double, double> get_convection_params(const ThermalNode& node, bool is_front, const WeatherData& w);
     double calc_h_rad(double T_surf_K, double T_env_K, double epsilon);
-    bool ray_intersects_triangle(const Vec3& ray_origin, const Vec3& ray_dir, const Triangle& tri);
 };
