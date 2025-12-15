@@ -36,6 +36,13 @@ struct BVHNode {
     ~BVHNode(); // 析构函数负责清理内存
 };
 
+struct HitInfo {
+    bool has_hit = false;
+    int hit_node_index = -1;  // 打到了哪个 ThermalNode
+    double t = 1e30;          // 距离
+    bool hit_front_side = true; // true=正面, false=背面
+};
+
 // BVH 加速器主类
 class BVHAccel {
 public:
@@ -49,6 +56,8 @@ public:
     // origin: 射线起点, dir: 方向, max_dist: 最大距离, self_id: 发射者ID(防止自遮挡)
     bool intersect_shadow(const Vec3& origin, const Vec3& dir, double max_dist, int self_id) const;
 
+    // 返回详细命中信息的函数
+    HitInfo intersect_closest(const Vec3& origin, const Vec3& dir, double max_dist, int self_id) const;
 private:
     BVHNode* root = nullptr;
     const std::vector<ThermalNode>* ref_nodes = nullptr; // 持有外部数据的指针
@@ -58,4 +67,7 @@ private:
 
     // 递归查询
     bool recursive_intersect(BVHNode* node, const Vec3& origin, const Vec3& dir, const Vec3& invDir, double max_dist, int self_id) const;
+    
+    // ...
+    void recursive_intersect_closest(BVHNode* node, const Vec3& origin, const Vec3& dir, const Vec3& invDir, double max_dist, int self_id, HitInfo& closest_hit) const;
 };

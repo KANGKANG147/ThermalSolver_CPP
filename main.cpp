@@ -35,6 +35,9 @@ int main() {
     // 3. 建立物理拓扑
     solver.build_topology();
 
+    // 计算角系数 (预计算)
+    // 建议采样数 1000 以上，越多越准，但越慢
+    solver.calculate_view_factors(1000);
     // 输出过滤
   /*  std::vector<int> surf_indices;
     for (int i = 0; i < g_nodes.size(); ++i) {

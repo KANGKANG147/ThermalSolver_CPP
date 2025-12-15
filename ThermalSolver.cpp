@@ -181,6 +181,74 @@ void ThermalSolver::build_topology() {
     bvh.build(nodes);
 }
 
+// ==========================================
+// 2. MCRT 核心实现 把一个 ThermalNode 视为两个独立的辐射源
+// ==========================================
+void ThermalSolver::calculate_view_factors(int samples) {
+    std::cout << "[MCRT] Calculating View Factors (" << samples << " rays/node)..." << std::endl;
+
+    #pragma omp parallel for 
+    for (int i = 0; i < nodes.size(); ++i) {
+        ThermalNode& node = nodes[i];
+
+        // 计算节点的【正面】辐射
+        // 临时统计 map: key -> pair<目标ID, 目标正反>, value -> 命中次数
+        std::map<std::pair<int, bool>, int> hits_front;
+        int sky_hits_front = 0;
+        Vec3 origin_f = node.centroid + node.normal * 0.01;// 发射点：质心沿法线向外偏移一点点
+
+        for (int s = 0; s < samples; ++s) {
+            // 1. 生成基于法线(Normal)的随机射线
+            Vec3 dir = sample_hemisphere(node.normal);
+            // 查找最近的物体，距离上限设大一点
+            HitInfo hit = bvh.intersect_closest(origin_f, dir, 1e20, i);
+            // 击中了别的物体 (target)
+            if (hit.has_hit) hits_front[{hit.hit_node_index, hit.hit_front_side}]++;
+            // 击中天空
+            else sky_hits_front++;
+        }
+
+        // 归一化并存入 rad_links_front
+        node.rad_links_front.clear();
+        for (auto const& entry : hits_front) {
+            auto const& map_key = entry.first;
+            int count = entry.second;
+            double vf = (double)count / samples;
+            if (vf > 0.001) node.rad_links_front.push_back({ map_key.first, map_key.second, vf });
+        }
+        node.vf_sky_front = (double)sky_hits_front / samples;
+
+        // 计算节点的【背面】辐射
+        if (node.bc_back.type != CONV_INSULATED) {
+            std::map<std::pair<int, bool>, int> hits_back;
+            int sky_hits_back = 0;
+            Vec3 origin_b = node.centroid - node.normal * 0.01;// 向内偏移
+            Vec3 normal_b = node.normal * -1.0;// 反向法线
+
+            for (int s = 0; s < samples; ++s) {
+                // 1. 生成基于反向法线(-Normal)的随机射线
+                Vec3 dir = sample_hemisphere(normal_b);
+                HitInfo hit = bvh.intersect_closest(origin_b, dir, 1e20, i);
+                if (hit.has_hit) hits_back[{hit.hit_node_index, hit.hit_front_side}]++;
+                else sky_hits_back++;
+            }
+
+            node.rad_links_back.clear();
+            for (auto const& entry : hits_back) {
+                auto const& map_key = entry.first;
+                int count = entry.second;
+                double vf = (double)count / samples;
+                if (vf > 0.001) node.rad_links_back.push_back({ map_key.first, map_key.second, vf });
+            }
+            node.vf_sky_back = (double)sky_hits_back / samples;
+        }
+        else {
+            node.vf_sky_back = 0.0;
+        }
+    }
+    std::cout << "[MCRT] Done." << std::endl;
+}
+
 void ThermalSolver::update_shadows(const Vec3& sun_dir) {
     Vec3 ray_dir = normalize(sun_dir); 
     const double BIAS = 0.05; // 偏移量，防止自己遮挡自己
@@ -201,6 +269,38 @@ void ThermalSolver::update_shadows(const Vec3& sun_dir) {
     }
 }
 
+// ==========================================
+// 辅助：辐射线性化系数计算
+// ==========================================
+double ThermalSolver::calc_h_rad(double T_surf_K, double T_env_K, double epsilon) {
+    // 防止除零错误
+    if (std::abs(T_surf_K - T_env_K) < 0.1) {
+        return 4.0 * SIGMA * epsilon * std::pow(T_surf_K, 3);
+    }
+    return SIGMA * epsilon * (std::pow(T_surf_K, 2) + std::pow(T_env_K, 2)) * (T_surf_K + T_env_K);
+}
+
+// ==========================================
+// 对流系数 
+// ==========================================
+// 返回 pair: {h_value, T_fluid}
+std::pair<double, double> ThermalSolver::get_convection_params(const ThermalNode& node, bool is_front, const WeatherData& w) {
+    const ConvectionBC& bc = is_front ? node.bc_front : node.bc_back;
+    double T_surf = is_front ? node.T_front : node.T_back;
+
+    if (bc.type == CONV_INSULATED) return { 0.0, 0.0 };
+
+    if (bc.type == CONV_FIXED_H_T) {
+        double T_f = (std::abs(bc.fixed_fluid_T) < 0.001) ? w.air_temp : bc.fixed_fluid_T;
+        return { bc.fixed_h, T_f };
+    }
+
+    // CONV_WIND
+    double T_fluid = w.air_temp;
+    double h_total = bc.wind_coeff_A + bc.wind_coeff_B * w.wind;
+    return { h_total, T_fluid };
+}
+
 void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, WeatherSystem& weather, bool is_steady_init) {
     WeatherData w = weather.get_weather(hour);
 
@@ -209,8 +309,17 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
 
     // 1. 预计算环境参数
     bool use_lwir = (w.lwir > 10.0);
-    double T_sky_K = use_lwir ? 0.0 : (w.air_temp + 273.15) * 0.9;
-    // 注意：如果有实测 LWIR，sky temperature 并不直接用。这里简化处理。
+    // 计算天空等效辐射温度 (Kelvin)
+    double T_sky_K = 0.0;
+    if (use_lwir) {
+        // 如果有长波辐射实测值: T_sky = (LWIR / sigma)^0.25
+        T_sky_K = std::pow(w.lwir / SIGMA, 0.25);
+    }
+    else {
+        // 简易估算: 空气温度 * 0.9 (转为K)
+        T_sky_K = (w.air_temp + 273.15) * 0.9;
+    }
+    double T_sky_C = T_sky_K - 273.15; // 线性化时用的摄氏度
 
     // 2. 初始化 Guess 温度 (用上一时刻的温度作为初猜值)
     for (auto& node : nodes) {
@@ -240,6 +349,9 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             // 获取当前迭代的最新温度估计值
             double Tf_curr = node.T_front_next;
             double Tb_curr = node.T_back_next;
+            // 预计算 Kelvin 温度用于辐射公式
+            double Tf_K = Tf_curr + 273.15;
+            double Tb_K = Tb_curr + 273.15;
 
             // ==========================
             // 节点 1: Front Surface
@@ -252,7 +364,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             sum_G += C_term;
             sum_Q += C_term * node.T_front; // 上一时刻的温度
 
-            // B. 太阳辐射 (作为固定热源 Q)
+            // B. 太阳辐射 (作为固定热源 Q)(短波 - 仅正面)
             double n_dot_s = dot(node.normal, normalize(sun_dir));
             // 只有当法线朝向太阳时才计算 (n_dot_s > 0)
             double cos_theta = std::max(0.0, n_dot_s);
@@ -265,23 +377,30 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             sum_G += G_conv_f;
             sum_Q += G_conv_f * conv_f.second; // h * T_fluid
 
-            // D. 环境辐射 (线性化)
-            double G_rad_f = 0.0;
-            double T_rad_env = 0.0;
-            if (use_lwir) {
-                // Q = eps * A * (LWIR - sigma*T^4) -> 很难完全线性化，
-                // 这里采用简化策略：把它当成针对天空温度的辐射
-                // 此时 T_sky^4 对应 w.lwir / sigma
-                double T_sky_equiv = std::pow(w.lwir / SIGMA, 0.25);
-                G_rad_f = calc_h_rad(Tf_curr + 273.15, T_sky_equiv, node.ir_emissivity) * node.area;
-                T_rad_env = T_sky_equiv - 273.15;
+            // D-1. 天空辐射 (长波)
+            // 使用 calc_h_rad 进行线性化，并乘以 MCRT 算出的 vf_sky_front
+            // h_eff = h_rad * ViewFactor
+            double h_rad_sky_f = calc_h_rad(Tf_K, T_sky_K, node.ir_emissivity);
+            double G_sky_f = h_rad_sky_f * node.area * node.vf_sky_front;
+            sum_G += G_sky_f;
+            sum_Q += G_sky_f * T_sky_C;
+
+            // D-2. 互辐射 (Inter-reflection)
+            // 遍历 MCRT 建立的辐射链接
+            for (const auto& link : node.rad_links_front) {
+                // 获取目标表面的当前温度
+                // 关键点：根据 link.target_is_front 判断取对方的正面还是背面温度
+                double T_target_C = link.target_is_front ?
+                    nodes[link.target_node_idx].T_front_next :
+                    nodes[link.target_node_idx].T_back_next;
+                double T_target_K = T_target_C + 273.15;
+
+                // 计算辐射热流 Q = sigma * eps * A * F * (T_target^4 - T_self^4)
+                // 这里作为显式源项处理 (Explicit Source Term)
+                double Q_inter = SIGMA * node.ir_emissivity * node.area * link.view_factor * (std::pow(T_target_K, 4) - std::pow(Tf_K, 4));
+
+                sum_Q += Q_inter;
             }
-            else {
-                G_rad_f = calc_h_rad(Tf_curr + 273.15, T_sky_K, node.ir_emissivity) * node.area;
-                T_rad_env = T_sky_K - 273.15;
-            }
-            sum_G += G_rad_f;
-            sum_Q += G_rad_f * T_rad_env;
 
             // E. 内部导热 (连接 Back 面)
             // Q_cond = K * (Tb_curr - Tf_curr) -> +K*Tb_curr - K*Tf_curr
@@ -321,20 +440,37 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             sum_G += C_term;
             sum_Q += C_term * node.T_back;
 
-            // B. 内部发热 (如有)
-            double Q_gen = 0.0;
-            sum_Q += Q_gen;
-
-            // C. 对流
+            // B. 对流
             auto conv_b = get_convection_params(node, false, w);
             double G_conv_b = conv_b.first * node.area;
             sum_G += G_conv_b;
             sum_Q += G_conv_b * conv_b.second;
 
-            // D. 内部导热 (连接 Front 面)
+            // C. 内部导热 (连接 Front 面)
             // 注意：这里要用刚刚更新过的 T_front_next，这叫 Gauss-Seidel 此时更新
             sum_G += node.conductance;
             sum_Q += node.conductance * node.T_front_next;
+
+            // D. 【新增】辐射热交换 (Back 面)
+            // 只有当背面不是绝热层时才计算
+            if (node.bc_back.type != CONV_INSULATED) {
+                // D-1. 天空辐射 (Back)
+                double h_rad_sky_b = calc_h_rad(Tb_K, T_sky_K, node.ir_emissivity);
+                double G_sky_b = h_rad_sky_b * node.area * node.vf_sky_back;
+                sum_G += G_sky_b;
+                sum_Q += G_sky_b * T_sky_C;
+
+                // D-2. 互辐射 (Back)
+                for (const auto& link : node.rad_links_back) {
+                    double T_target_C = link.target_is_front ?
+                        nodes[link.target_node_idx].T_front_next :
+                        nodes[link.target_node_idx].T_back_next;
+                    double T_target_K = T_target_C + 273.15;
+
+                    double Q_inter = SIGMA * node.ir_emissivity * node.area * link.view_factor * (std::pow(T_target_K, 4) - std::pow(Tb_K, 4));
+                    sum_Q += Q_inter;
+                }
+            }
 
             // >>> 求解 Back 新温度 <<<
             node.T_back_next = sum_Q / sum_G;
@@ -348,34 +484,3 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
     }
 }
 
-// ==========================================
-// 辅助：辐射线性化系数计算
-// ==========================================
-double ThermalSolver::calc_h_rad(double T_surf_K, double T_env_K, double epsilon) {
-    // 防止除零错误
-    if (std::abs(T_surf_K - T_env_K) < 0.1) {
-        return 4.0 * SIGMA * epsilon * std::pow(T_surf_K, 3);
-    }
-    return SIGMA * epsilon * (std::pow(T_surf_K, 2) + std::pow(T_env_K, 2)) * (T_surf_K + T_env_K);
-}
-
-// ==========================================
-// 对流系数 
-// ==========================================
-// 返回 pair: {h_value, T_fluid}
-std::pair<double, double> ThermalSolver::get_convection_params(const ThermalNode& node, bool is_front, const WeatherData& w) {
-    const ConvectionBC& bc = is_front ? node.bc_front : node.bc_back;
-    double T_surf = is_front ? node.T_front : node.T_back;
-
-    if (bc.type == CONV_INSULATED) return { 0.0, 0.0 };
-
-    if (bc.type == CONV_FIXED_H_T) {
-        double T_f = (std::abs(bc.fixed_fluid_T) < 0.001) ? w.air_temp : bc.fixed_fluid_T;
-        return { bc.fixed_h, T_f };
-    }
-
-    // CONV_WIND
-    double T_fluid = w.air_temp;
-    double h_total = bc.wind_coeff_A + bc.wind_coeff_B * w.wind;
-    return { h_total, T_fluid };
-}

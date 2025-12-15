@@ -52,6 +52,13 @@ struct EdgeLink {
     double conductance;
 };
 
+// 辐射链接：记录“我”看到了“谁”的“哪一面”
+struct RadLink {
+    int target_node_idx;     // 目标 Node ID
+    bool target_is_front;    // true=看到的是目标的正面, false=看到的是背面
+    double view_factor;      // 角系数
+};
+
 struct ThermalNode {
     double T_front, T_back;
     double T_front_next, T_back_next;
@@ -71,4 +78,13 @@ struct ThermalNode {
     std::vector<EdgeLink> neighbors;
     double k_mat; // 需要存一下材料的 k 值，用于计算横向导热
     double thickness; // 存一下厚度
+
+    // --- MCRT ---
+    // 正面 (Front) 的辐射数据
+    std::vector<RadLink> rad_links_front;
+    double vf_sky_front; // 正面看到天空的系数
+
+    // 背面 (Back) 的辐射数据
+    std::vector<RadLink> rad_links_back;
+    double vf_sky_back;  // 背面看到天空的系数
 };

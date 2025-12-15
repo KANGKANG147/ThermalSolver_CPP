@@ -80,6 +80,19 @@ static bool ray_tri_intersect(const Vec3& orig, const Vec3& dir, const Triangle&
     double t = f * dot(e2, q);
     return (t > 1e-4 && t < max_dist); // 1e-4 是防止自我遮挡的容差
 }
+static double ray_tri_intersect_t(const Vec3& orig, const Vec3& dir, const Triangle& tri, double max_dist) {
+    Vec3 v0 = tri.v0; Vec3 v1 = tri.v1; Vec3 v2 = tri.v2;
+    Vec3 e1 = v1 - v0; Vec3 e2 = v2 - v0; Vec3 h = cross(dir, e2);
+    double a = dot(e1, h);
+    if (a > -1e-8 && a < 1e-8) return -1.0;
+    double f = 1.0 / a; Vec3 s = orig - v0; double u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0) return -1.0;
+    Vec3 q = cross(s, e1); double v = f * dot(dir, q);
+    if (v < 0.0 || u + v > 1.0) return -1.0;
+    double t = f * dot(e2, q);
+    if (t > 1e-4 && t < max_dist) return t;
+    return -1.0;
+}
 
 // ==========================================
 // BVHAccel 实现
@@ -184,4 +197,54 @@ bool BVHAccel::recursive_intersect(BVHNode* node, const Vec3& origin, const Vec3
     if (recursive_intersect(node->right, origin, dir, invDir, max_dist, self_id)) return true;
 
     return false;
+}
+
+// 【MCRT 接口实现】
+HitInfo BVHAccel::intersect_closest(const Vec3& origin, const Vec3& dir, double max_dist, int self_id) const {
+    HitInfo closest;
+    closest.has_hit = false;
+    closest.t = max_dist;
+
+    if (!root) return closest;
+    Vec3 invDir = { 1.0 / dir.x, 1.0 / dir.y, 1.0 / dir.z };
+
+    recursive_intersect_closest(root, origin, dir, invDir, max_dist, self_id, closest);
+    return closest;
+}
+
+void BVHAccel::recursive_intersect_closest(BVHNode* node, const Vec3& origin, const Vec3& dir, const Vec3& invDir, double max_dist, int self_id, HitInfo& closest_hit) const {
+    // 如果当前包围盒比已知的最近交点还远，直接跳过
+    if (!node->bbox.intersect(origin, invDir, closest_hit.t)) return;
+
+    if (node->is_leaf()) {
+        for (int idx : node->node_indices) {
+            if (idx == self_id) continue;
+            const auto& target = (*ref_nodes)[idx];
+
+            for (const auto& tri : target.geometry_tris) {
+                double t = ray_tri_intersect_t(origin, dir, tri, closest_hit.t);
+
+                if (t > 0.0 && t < closest_hit.t) {
+                    closest_hit.has_hit = true;
+                    closest_hit.t = t;
+                    closest_hit.hit_node_index = idx;
+
+                    // 【核心 TAITherm 逻辑：判断正反面】
+                    Vec3 tri_normal = normalize(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
+                    // 光线方向 dot 法线 < 0 说明是迎面击中 (Front)
+                    if (dot(dir, tri_normal) < 0.0) {
+                        closest_hit.hit_front_side = true;
+                    }
+                    else {
+                        closest_hit.hit_front_side = false;
+                    }
+                }
+            }
+        }
+    }
+    else {
+        // 中间节点：为了求最近，必须都查一遍
+        recursive_intersect_closest(node->left, origin, dir, invDir, max_dist, self_id, closest_hit);
+        recursive_intersect_closest(node->right, origin, dir, invDir, max_dist, self_id, closest_hit);
+    }
 }

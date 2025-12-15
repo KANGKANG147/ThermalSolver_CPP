@@ -15,6 +15,9 @@ public:
     // 更新阴影遮挡
     void update_shadows(const Vec3& sun_dir);
 
+    // MCRT 核心入口：计算角系数
+    void calculate_view_factors(int samples);
+
     // 核心计算步
     void solve_step(double dt, double hour, const Vec3& sun_dir, WeatherSystem& weather, bool is_steady_init);
 
