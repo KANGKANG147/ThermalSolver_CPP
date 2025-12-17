@@ -301,6 +301,76 @@ std::pair<double, double> ThermalSolver::get_convection_params(const ThermalNode
     return { h_total, T_fluid };
 }
 
+void ThermalSolver::solve_radiosity_system(double env_temp_K) {
+    const double SIGMA = 5.67e-8;
+    double E_env = SIGMA * std::pow(env_temp_K, 4.0);
+
+    // 1. 初始化 J (基于当前温度)
+    for (auto& node : nodes) {
+        double T_f_K = node.T_front + 273.15;
+        double T_b_K = node.T_back + 273.15;
+
+        double E_f = node.ir_emissivity * SIGMA * std::pow(T_f_K, 4.0);
+        double E_b = node.ir_emissivity * SIGMA * std::pow(T_b_K, 4.0);
+
+        // 初始猜测：只有自身发射
+        node.J_front = E_f + (1.0 - node.ir_emissivity) * E_env * node.vf_sky_front;
+        node.J_back = E_b + (1.0 - node.ir_emissivity) * E_env * node.vf_sky_back;
+    }
+
+    // 2. 迭代求解 (Gauss-Seidel)
+    int iterations = 10;
+    for (int k = 0; k < iterations; ++k) {
+        for (auto& node : nodes) {
+            double rho = 1.0 - node.ir_emissivity;
+
+            // --- 更新 Front J ---
+            double H_inc_front = 0.0;
+            for (const auto& link : node.rad_links_front) {
+                // 对方如果是正面，取 J_front；如果是背面，取 J_back
+                double J_target = link.target_is_front ? nodes[link.target_node_idx].J_front
+                    : nodes[link.target_node_idx].J_back;
+                H_inc_front += link.view_factor * J_target;
+            }
+            H_inc_front += node.vf_sky_front * E_env;
+
+            double T_f_K = node.T_front + 273.15;
+            double E_f = node.ir_emissivity * SIGMA * std::pow(T_f_K, 4.0);
+            node.J_front = E_f + rho * H_inc_front;
+
+            // --- 更新 Back J ---
+            double H_inc_back = 0.0;
+            for (const auto& link : node.rad_links_back) {
+                double J_target = link.target_is_front ? nodes[link.target_node_idx].J_front
+                    : nodes[link.target_node_idx].J_back;
+                H_inc_back += link.view_factor * J_target;
+            }
+            H_inc_back += node.vf_sky_back * E_env;
+
+            double T_b_K = node.T_back + 273.15;
+            double E_b = node.ir_emissivity * SIGMA * std::pow(T_b_K, 4.0);
+            node.J_back = E_b + rho * H_inc_back;
+        }
+    }
+
+    // 3. 计算净热流 Q_rad (Watts)
+    for (auto& node : nodes) {
+        double eps = node.ir_emissivity;
+        if (eps > 0.999) eps = 0.999;
+
+        // Front Q_rad
+        double T_f_K = node.T_front + 273.15;
+        double E_f = SIGMA * std::pow(T_f_K, 4.0);
+        // Q_net_gain = - Q_net_loss
+        node.Q_rad_front = -(node.area * eps * (E_f - node.J_front) / (1.0 - eps));
+
+        // Back Q_rad
+        double T_b_K = node.T_back + 273.15;
+        double E_b = SIGMA * std::pow(T_b_K, 4.0);
+        node.Q_rad_back = -(node.area * eps * (E_b - node.J_back) / (1.0 - eps));
+    }
+}
+
 void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, WeatherSystem& weather, bool is_steady_init) {
     WeatherData w = weather.get_weather(hour);
 
@@ -320,6 +390,12 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
         T_sky_K = (w.air_temp + 273.15) * 0.9;
     }
     double T_sky_C = T_sky_K - 273.15; // 线性化时用的摄氏度
+
+    // =============================================================
+    // [STEP 0] 求解长波辐射网络 (Radiosity)
+    // 这一步计算了包含多重反射和天空辐射的净热流 Q_rad_front/back
+    // =============================================================
+    solve_radiosity_system(T_sky_K);
 
     // 2. 初始化 Guess 温度 (用上一时刻的温度作为初猜值)
     for (auto& node : nodes) {
@@ -377,30 +453,10 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             sum_G += G_conv_f;
             sum_Q += G_conv_f * conv_f.second; // h * T_fluid
 
-            // D-1. 天空辐射 (长波)
-            // 使用 calc_h_rad 进行线性化，并乘以 MCRT 算出的 vf_sky_front
-            // h_eff = h_rad * ViewFactor
-            double h_rad_sky_f = calc_h_rad(Tf_K, T_sky_K, node.ir_emissivity);
-            double G_sky_f = h_rad_sky_f * node.area * node.vf_sky_front;
-            sum_G += G_sky_f;
-            sum_Q += G_sky_f * T_sky_C;
-
-            // D-2. 互辐射 (Inter-reflection)
-            // 遍历 MCRT 建立的辐射链接
-            for (const auto& link : node.rad_links_front) {
-                // 获取目标表面的当前温度
-                // 关键点：根据 link.target_is_front 判断取对方的正面还是背面温度
-                double T_target_C = link.target_is_front ?
-                    nodes[link.target_node_idx].T_front_next :
-                    nodes[link.target_node_idx].T_back_next;
-                double T_target_K = T_target_C + 273.15;
-
-                // 计算辐射热流 Q = sigma * eps * A * F * (T_target^4 - T_self^4)
-                // 这里作为显式源项处理 (Explicit Source Term)
-                double Q_inter = SIGMA * node.ir_emissivity * node.area * link.view_factor * (std::pow(T_target_K, 4) - std::pow(Tf_K, 4));
-
-                sum_Q += Q_inter;
-            }
+            // D. 长波辐射 (Radiosity Result)
+            // 之前的 "D-1 天空辐射" 和 "D-2 互辐射" 全部被 Radiosity 结果替代
+            // 这是一个显式源项，包含了两者的贡献
+            sum_Q += node.Q_rad_front;
 
             // E. 内部导热 (连接 Back 面)
             // Q_cond = K * (Tb_curr - Tf_curr) -> +K*Tb_curr - K*Tf_curr
@@ -454,22 +510,9 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             // D. 【新增】辐射热交换 (Back 面)
             // 只有当背面不是绝热层时才计算
             if (node.bc_back.type != CONV_INSULATED) {
-                // D-1. 天空辐射 (Back)
-                double h_rad_sky_b = calc_h_rad(Tb_K, T_sky_K, node.ir_emissivity);
-                double G_sky_b = h_rad_sky_b * node.area * node.vf_sky_back;
-                sum_G += G_sky_b;
-                sum_Q += G_sky_b * T_sky_C;
-
-                // D-2. 互辐射 (Back)
-                for (const auto& link : node.rad_links_back) {
-                    double T_target_C = link.target_is_front ?
-                        nodes[link.target_node_idx].T_front_next :
-                        nodes[link.target_node_idx].T_back_next;
-                    double T_target_K = T_target_C + 273.15;
-
-                    double Q_inter = SIGMA * node.ir_emissivity * node.area * link.view_factor * (std::pow(T_target_K, 4) - std::pow(Tb_K, 4));
-                    sum_Q += Q_inter;
-                }
+                // 直接使用 Radiosity 计算出的净热流
+                 // 这包含了引擎室内部的互辐射和反射
+                sum_Q += node.Q_rad_back;
             }
 
             // >>> 求解 Back 新温度 <<<

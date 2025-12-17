@@ -18,6 +18,9 @@ public:
     // MCRT 核心入口：计算角系数
     void calculate_view_factors(int samples);
 
+    // 求解辐射度矩阵 (同时处理 Front 和 Back)
+    void solve_radiosity_system(double env_temp_K);
+
     // 核心计算步
     void solve_step(double dt, double hour, const Vec3& sun_dir, WeatherSystem& weather, bool is_steady_init);
 

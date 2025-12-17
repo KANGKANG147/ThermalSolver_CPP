@@ -87,4 +87,12 @@ struct ThermalNode {
     // 背面 (Back) 的辐射数据
     std::vector<RadLink> rad_links_back;
     double vf_sky_back;  // 背面看到天空的系数
+
+    // 辐射度 J (W/m^2): 离开表面的总能量
+    double J_front = 0.0;
+    double J_back = 0.0;
+
+    // 净辐射热流 Q_rad (Watts): 最终算出来用于加热节点的能量
+    double Q_rad_front = 0.0;
+    double Q_rad_back = 0.0;
 };
