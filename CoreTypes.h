@@ -39,6 +39,9 @@ struct PartProperty {
     double thickness;
     double initial_temp; // 如果是 Assigned 类型，这个值就是全过程的固定温度
 
+    // 新增：体积热源强度 (W/m^3)
+    double volumetric_heat_gen = 0.0;
+
     GroupType group_type; // Assigned or Calculated
 
     ConvectionBC front_bc;
@@ -65,6 +68,10 @@ struct ThermalNode {
 
     double mass_node, conductance, area;
     double solar_absorp, ir_emissivity;
+
+    // 新增：该节点的总内部热源功率 (Watts)
+    // 注意：求解时 Front 和 Back 各分一半
+    double Q_gen_total = 0.0;
 
     ConvectionBC bc_front, bc_back;
     GroupType group_type; // 记录类型：ASSIGNED 或 CALCULATED

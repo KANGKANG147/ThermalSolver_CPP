@@ -429,6 +429,10 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             double Tf_K = Tf_curr + 273.15;
             double Tb_K = Tb_curr + 273.15;
 
+            // ★★★ 准备内部热源项 ★★★
+            // 将总功率平分给 Front 和 Back
+            double Q_internal_half = 0.5 * node.Q_gen_total;
+
             // ==========================
             // 节点 1: Front Surface
             // ==========================
@@ -457,6 +461,9 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             // 之前的 "D-1 天空辐射" 和 "D-2 互辐射" 全部被 Radiosity 结果替代
             // 这是一个显式源项，包含了两者的贡献
             sum_Q += node.Q_rad_front;
+
+            // 插入内部热源 (Front) 
+            sum_Q += Q_internal_half;
 
             // E. 内部导热 (连接 Back 面)
             // Q_cond = K * (Tb_curr - Tf_curr) -> +K*Tb_curr - K*Tf_curr
@@ -514,6 +521,9 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
                  // 这包含了引擎室内部的互辐射和反射
                 sum_Q += node.Q_rad_back;
             }
+
+            // 插入内部热源 (Back) 
+            sum_Q += Q_internal_half;
 
             // >>> 求解 Back 新温度 <<<
             node.T_back_next = sum_Q / sum_G;

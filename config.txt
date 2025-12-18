@@ -128,14 +128,16 @@ END_GROUP
 
 # ==========================================
 # Group 10: 引擎 (恒温热源)
-# 设定为 80度 恒定
+# 设定为 88度 恒定
 # ==========================================
 BEGIN_GROUP
   NAME Engine
   TYPE ASSIGNED
   MAT Iron
-  THICK 0.050
-  INIT_TEMP 80.0
+  THICK 0.005
+  INIT_TEMP 88.0
+  # 设置体积热源强度为 100,000 W/m^3
+  HEAT_GEN_VOL 100000.0
   BC_FRONT FIXED 5.0 0.0
   BC_BACK  FIXED 5.0 0.0
 END_GROUP
@@ -189,6 +191,7 @@ BEGIN_GROUP
   MAT Steel
   THICK 0.005
   INIT_TEMP 250.0
+  HEAT_GEN_VOL 10000000.0
   BC_FRONT WIND 5.7 3.8
   BC_BACK  INSULATED
 END_GROUP

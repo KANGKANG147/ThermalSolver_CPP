@@ -15,7 +15,7 @@ void ConfigSystem::init_defaults() {
     // 设置硬编码默认配置作为保底
     ConvectionBC bc_weather = { CONV_WIND, 0, 0, 10.0, 3.0 };
     ConvectionBC bc_cabin = { CONV_FIXED_H_T, 5.0, 0.0, 0, 0 };
-    project_config["Default"] = { "Steel", 0.01, 20.0, TYPE_CALCULATED, bc_weather, bc_cabin };
+    project_config["Default"] = { "Steel", 0.01, 20.0, 0.0, TYPE_CALCULATED, bc_weather, bc_cabin };
 }
 
 bool ConfigSystem::load_config(const std::string& filename) {
@@ -47,7 +47,7 @@ bool ConfigSystem::load_config(const std::string& filename) {
         else if (key == "BEGIN_GROUP") {
             inside_group = true;
             // 重置临时变量为默认值
-            current_prop = { "Steel", 0.01, 20.0, TYPE_CALCULATED,
+            current_prop = { "Steel", 0.01, 20.0, 0.0, TYPE_CALCULATED,
                              {CONV_WIND, 0,0,10,3}, {CONV_FIXED_H_T, 5,0,0,0} };
             current_name = "Default";
         }
@@ -73,6 +73,7 @@ bool ConfigSystem::load_config(const std::string& filename) {
             else if (key == "MAT") ss >> current_prop.material_name;
             else if (key == "THICK") ss >> current_prop.thickness;
             else if (key == "INIT_TEMP") ss >> current_prop.initial_temp;
+            else if (key == "HEAT_GEN_VOL") ss >> current_prop.volumetric_heat_gen;
             else if (key == "BC_FRONT") current_prop.front_bc = parse_bc(ss);
             else if (key == "BC_BACK")  current_prop.back_bc = parse_bc(ss);
         }
@@ -119,6 +120,9 @@ bool ConfigSystem::load_obj_model(const std::string& filename, std::vector<Therm
             node.group_type = prop.group_type; // 记录类型
             node.k_mat = mat.k;
             node.thickness = prop.thickness;
+
+            // 计算该节点的总发热功率 (W) = (W/m^3) * Area * Thickness 
+            node.Q_gen_total = prop.volumetric_heat_gen * node.area * node.thickness;
 
             // 初始温度：如果是 Assigned，这个值将作为永久固定值
             node.T_front = node.T_back = prop.initial_temp;
