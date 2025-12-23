@@ -3,11 +3,17 @@
 #include "CoreTypes.h"
 #include "WeatherSystem.h" 
 #include "BVH.h"
+#include "LinearAlgebra.h"
+#include "AMGSolver.h"
 
 class ThermalSolver {
 public:
     std::vector<ThermalNode> nodes; // 所有的热节点
     BVHAccel bvh;
+
+    // AMG 求解器实例
+    AMGSolver amg_solver;
+    bool amg_initialized = false;
 
     // 构建拓扑连接（顶点焊接、横向导热）
     void build_topology();

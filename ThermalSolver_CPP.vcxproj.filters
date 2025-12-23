@@ -27,6 +27,9 @@
     <ClCompile Include="ThermalSolver.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="BVH.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="MathUtils.h">
@@ -42,6 +45,15 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ThermalSolver.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="BVH.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="LinearAlgebra.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="AMGSolver.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

@@ -134,9 +134,11 @@
     <ClCompile Include="WeatherSystem.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="AMGSolver.h" />
     <ClInclude Include="BVH.h" />
     <ClInclude Include="ConfigSystem.h" />
     <ClInclude Include="CoreTypes.h" />
+    <ClInclude Include="LinearAlgebra.h" />
     <ClInclude Include="MathUtils.h" />
     <ClInclude Include="ThermalSolver.h" />
     <ClInclude Include="WeatherSystem.h" />

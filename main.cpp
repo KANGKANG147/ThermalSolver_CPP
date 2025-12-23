@@ -78,7 +78,7 @@ int main() {
     std::cout << "\n[2/3] Simulating Transient..." << std::endl;
 
     std::ofstream out_csv("results.csv");
-    out_csv << "Time(h),Node_0_Temp\n";
+    out_csv << "Time(h),Node_0_Temp_Front,Node_0_Temp_Back\n";
 
     int steps = (int)((end_h - start_h) * 3600.0 / dt);
     double last_output_time = -9999;
@@ -93,9 +93,10 @@ int main() {
         Vec3 sun_dir = { std::cos(sun_ang), 0.5 * std::cos(sun_ang), std::sin(sun_ang) };
         if (weather.get_weather(hour).solar <= 1.0) sun_dir = { 0,0,-1 };
 
-        // 更新阴影 (每15分钟更新一次)
-        if (i % (int)(900 / dt) == 0 && hour <= 19.0) {
-            solver.update_shadows(sun_dir);
+        // 更新阴影 (策略优化：如果步长很大，建议每步都更)
+        // 如果 dt > 900s，则每步都更；否则每15分钟更
+        if (dt >= 900.0 || (i % (int)(900 / dt) == 0)) {
+            if (hour <= 19.0) solver.update_shadows(sun_dir);
         }
 
         // 求解一步
@@ -118,5 +119,6 @@ int main() {
     }
 
     std::cout << "\n[3/3] Simulation Complete." << std::endl;
+    out_csv.close();
     return 0;
 }

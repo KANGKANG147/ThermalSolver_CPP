@@ -372,6 +372,15 @@ void ThermalSolver::solve_radiosity_system(double env_temp_K) {
 }
 
 void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, WeatherSystem& weather, bool is_steady_init) {
+    int N = nodes.size();
+    int DOFs = 2 * N;
+
+    // 1. 组装线性系统 Ax = b
+    // 这部分代码我们在上一轮回复中已经写过雏形，这里完整呈现
+    MatrixBuilder mb(DOFs);
+    Vector b(DOFs, 0.0);
+    Vector x(DOFs, 0.0); // 初值
+
     WeatherData w = weather.get_weather(hour);
 
     // 如果是稳态初始化，我们将 dt 设为一个巨大的数，甚至可以忽略 mass 项
@@ -397,143 +406,123 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
     // =============================================================
     solve_radiosity_system(T_sky_K);
 
-    // 2. 初始化 Guess 温度 (用上一时刻的温度作为初猜值)
-    for (auto& node : nodes) {
-        node.T_front_next = node.T_front;
-        node.T_back_next = node.T_back;
-    }
+    for (int i = 0; i < N; ++i) {
+        ThermalNode& node = nodes[i];
+        int idx_F = 2 * i; // Front 自由度索引
+        int idx_B = 2 * i + 1; // Back 自由度索引
 
-    // 3. 高斯-赛德尔迭代 (Gauss-Seidel Loop)
-    // 增加迭代次数可以提高精度，一般 5-10 次足够
-    int iterations = is_steady_init ? 50 : 5;
+        // 填入上一时刻温度作为初猜 (Initial Guess)
+        x[idx_F] = node.T_front_next;
+        x[idx_B] = node.T_back_next;
 
-    for (int iter = 0; iter < iterations; ++iter) {
-
-        // 并行计算时，Gauss-Seidel 严格来说需要红黑排序，但对于热传导，
-        // 直接并行通常也能收敛，或者使用 OpenMP 的原子操作(虽然慢)。
-        // 为了简单展示逻辑，这里暂不开启 omp，确保逻辑清晰。
-        // #pragma omp parallel for 
-        for (int i = 0; i < nodes.size(); ++i) {
-            ThermalNode& node = nodes[i];
-
-            // --- 处理 Assigned 类型 (恒温) ---
-            if (node.group_type == TYPE_ASSIGNED) {
-                // 温度保持不变，不需要计算平衡方程
-                continue;
-            }
-
-            // 获取当前迭代的最新温度估计值
-            double Tf_curr = node.T_front_next;
-            double Tb_curr = node.T_back_next;
-            // 预计算 Kelvin 温度用于辐射公式
-            double Tf_K = Tf_curr + 273.15;
-            double Tb_K = Tb_curr + 273.15;
-
-            // ★★★ 准备内部热源项 ★★★
-            // 将总功率平分给 Front 和 Back
-            double Q_internal_half = 0.5 * node.Q_gen_total;
-
-            // ==========================
-            // 节点 1: Front Surface
-            // ==========================
-            double sum_G = 0.0; // 总热导 (Conductance Sum)
-            double sum_Q = 0.0; // 总热源 (Source Sum)
-
-            // A. 热容项 (惯性)
-            double C_term = node.mass_node / eff_dt;
-            sum_G += C_term;
-            sum_Q += C_term * node.T_front; // 上一时刻的温度
-
-            // B. 太阳辐射 (作为固定热源 Q)(短波 - 仅正面)
-            double n_dot_s = dot(node.normal, normalize(sun_dir));
-            // 只有当法线朝向太阳时才计算 (n_dot_s > 0)
-            double cos_theta = std::max(0.0, n_dot_s);
-            double Q_sun = w.solar * node.area * node.solar_absorp * node.shadow_factor * cos_theta;
-            sum_Q += Q_sun;
-
-            // C. 对流 (线性化: h * (T_fluid - T_surf) -> h*T_fluid - h*T_surf)
-            auto conv_f = get_convection_params(node, true, w);
-            double G_conv_f = conv_f.first * node.area;
-            sum_G += G_conv_f;
-            sum_Q += G_conv_f * conv_f.second; // h * T_fluid
-
-            // D. 长波辐射 (Radiosity Result)
-            // 之前的 "D-1 天空辐射" 和 "D-2 互辐射" 全部被 Radiosity 结果替代
-            // 这是一个显式源项，包含了两者的贡献
-            sum_Q += node.Q_rad_front;
-
-            // 插入内部热源 (Front) 
-            sum_Q += Q_internal_half;
-
-            // E. 内部导热 (连接 Back 面)
-            // Q_cond = K * (Tb_curr - Tf_curr) -> +K*Tb_curr - K*Tf_curr
-            sum_G += node.conductance;
-            sum_Q += node.conductance * Tb_curr; // 这里的 Tb_curr 是最新迭代值
-
-            // F. 横向导热 (Lateral Conduction)
-            // 逻辑：Q_lat = sum( K_ij * (T_neighbor - T_self) )
-            // 在隐式方程中：
-            // sum_Q += K_ij * T_neighbor
-            // sum_G += K_ij
-
-            for (const auto& link : node.neighbors) {
-                int n_idx = link.neighbor_idx;
-                double K_lat = link.conductance;
-
-                // 获取邻居的最新温度 (使用 Front 温度，因为对于薄壳，横向导热通常看作均温或 Front 层主导)
-                // 也可以更精细：Front 传 Front，Back 传 Back。这里简化为 Front 层横向导热。
-                double T_neighbor = nodes[n_idx].T_front_next;
-
-                sum_G += K_lat;
-                sum_Q += K_lat * T_neighbor;
-            }
-
-            // >>> 求解 Front 新温度 <<<
-            // sum_G * T_new = sum_Q
-            node.T_front_next = sum_Q / sum_G;
-
-
-            // ==========================
-            // 节点 2: Back Surface
-            // ==========================
-            sum_G = 0.0;
-            sum_Q = 0.0;
-
-            // A. 热容
-            sum_G += C_term;
-            sum_Q += C_term * node.T_back;
-
-            // B. 对流
-            auto conv_b = get_convection_params(node, false, w);
-            double G_conv_b = conv_b.first * node.area;
-            sum_G += G_conv_b;
-            sum_Q += G_conv_b * conv_b.second;
-
-            // C. 内部导热 (连接 Front 面)
-            // 注意：这里要用刚刚更新过的 T_front_next，这叫 Gauss-Seidel 此时更新
-            sum_G += node.conductance;
-            sum_Q += node.conductance * node.T_front_next;
-
-            // D. 【新增】辐射热交换 (Back 面)
-            // 只有当背面不是绝热层时才计算
-            if (node.bc_back.type != CONV_INSULATED) {
-                // 直接使用 Radiosity 计算出的净热流
-                 // 这包含了引擎室内部的互辐射和反射
-                sum_Q += node.Q_rad_back;
-            }
-
-            // 插入内部热源 (Back) 
-            sum_Q += Q_internal_half;
-
-            // >>> 求解 Back 新温度 <<<
-            node.T_back_next = sum_Q / sum_G;
+        if (node.group_type == TYPE_ASSIGNED) {
+            // 对角线设为1，右端项设为目标温度 -> T = T_target
+            mb.add(idx_F, idx_F, 1.0); b[idx_F] = node.T_front_next;
+            mb.add(idx_B, idx_B, 1.0); b[idx_B] = node.T_back_next;
+            continue;
         }
+
+        // --- 构建 Front 方程 ---
+        // (C/dt + SumG + h_rad) * T_new - Sum(K*T_neigh) = Q_old + Q_src + h_rad*T_old
+
+        // C: 热惯性系数 (Mass * Cp / dt)
+        double C = node.mass_node / eff_dt;
+        double diag_F = C;// 对角线基础值 (惯性)
+        double rhs_F = C * node.T_front;// 右端项基础值 (历史温度惯性)
+
+        // 辐射线性化
+        double Tk_f = node.T_front + 273.15;
+        double h_rad = 4.0 * node.ir_emissivity * 5.67e-8 * node.area * std::pow(Tk_f, 3.0);
+        diag_F += h_rad;
+        rhs_F += node.Q_rad_front + h_rad * node.T_front;
+
+        // 对流
+        auto conv = get_convection_params(node, true, w);
+        diag_F += conv.first * node.area;// hA 加到左边
+        rhs_F += conv.first * node.area * conv.second;// hA * T_fluid 加到右边
+
+        // 太阳辐射 
+        double n_dot_s = dot(node.normal, normalize(sun_dir));
+        rhs_F += w.solar * node.area * node.solar_absorp * node.shadow_factor * std::max(0.0, n_dot_s);
+        
+        // 内部热源
+        rhs_F += 0.5 * node.Q_gen_total;
+
+        // 导热 (法向)
+        double K = node.conductance;
+        diag_F += K;
+        mb.add(idx_F, idx_B, -K);
+
+        // 导热 (横向)
+        for (auto& link : node.neighbors) {
+            diag_F += link.conductance;
+            mb.add(idx_F, 2 * link.neighbor_idx, -link.conductance);
+        }
+
+        // 写入 Front 矩阵行
+        mb.add(idx_F, idx_F, diag_F);
+        b[idx_F] = rhs_F;
+
+        // ---------------------------------------------------------
+        // 构建 Back 方程 (idx_B)
+        // 方程: (C + SumG) * T_B_new - Sum(K_neigh * T_neigh_new) = Q_sources
+        // ---------------------------------------------------------
+        double diag_B = C;              // 对角线基础值 (惯性)
+        double rhs_B = C * node.T_back; // 右端项基础值 (历史温度惯性)
+
+        // A. 法向导热 (连接 Front)
+        diag_B += K; // 增加自身稳定性
+        mb.add(idx_B, idx_F, -K); // 耦合项: -K * T_Front
+
+        // B. 对流 (Back)
+        auto conv_b = get_convection_params(node, false, w);
+        diag_B += conv_b.first * node.area;
+        rhs_B += conv_b.first * node.area * conv_b.second;
+
+        // C. 内部热源 (Back Share 50%)
+        rhs_B += 0.5 * node.Q_gen_total;
+
+        // D. 辐射 (Back) - 仅当非绝热时计算
+        if (node.bc_back.type != CONV_INSULATED) {
+            // 基础 MCRT 辐射热流
+            rhs_B += node.Q_rad_back;
+
+            // 辐射线性化 (Back)
+            double Tk_b = node.T_back + 273.15;
+            double h_rad_b = 4.0 * node.ir_emissivity * 5.67e-8 * node.area * std::pow(Tk_b, 3.0);
+
+            diag_B += h_rad_b;               // 加到左边
+            rhs_B += h_rad_b * node.T_back;  // 加到右边
+        }
+
+        // E. 横向导热 (Back)
+        // 目前模型假设横向导热主要通过 Front 节点连接，Back 节点通常无横向连接
+        // 如果您的模型支持多层横向导热，可以在此添加循环
+
+        // 写入 Back 矩阵行
+        mb.add(idx_B, idx_B, diag_B);
+        b[idx_B] = rhs_B;
     }
 
-    // 4. 更新状态
-    for (auto& node : nodes) {
-        node.T_front = node.T_front_next;
-        node.T_back = node.T_back_next;
+    // 2. 组装矩阵
+    SparseMatrix A = mb.build();
+
+    // 3. AMG Setup (如果是第一次，或者拓扑改变了，或者是线性化导致矩阵变了)
+    // 对于非线性热问题，矩阵A随温度变化 (h_rad)，所以每步都要 Setup (或者每几步)
+    amg_solver.setup(A);
+
+    // 4. AMG Solve
+    // 初始猜测 x 已经是 T_front_next
+    amg_solver.solve(b, x);
+
+    // 5. 更新回物理节点
+    for (int i = 0; i < N; ++i) {
+        nodes[i].T_front_next = x[2 * i];
+        nodes[i].T_back_next = x[2 * i + 1];
+
+        // 更新显示值
+        nodes[i].T_front = nodes[i].T_front_next;
+        nodes[i].T_back = nodes[i].T_back_next;
     }
 }
 
