@@ -412,13 +412,13 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
         int idx_B = 2 * i + 1; // Back 自由度索引
 
         // 填入上一时刻温度作为初猜 (Initial Guess)
-        x[idx_F] = node.T_front_next;
-        x[idx_B] = node.T_back_next;
+        x[idx_F] = node.T_front;
+        x[idx_B] = node.T_back;
 
         if (node.group_type == TYPE_ASSIGNED) {
             // 对角线设为1，右端项设为目标温度 -> T = T_target
-            mb.add(idx_F, idx_F, 1.0); b[idx_F] = node.T_front_next;
-            mb.add(idx_B, idx_B, 1.0); b[idx_B] = node.T_back_next;
+            mb.add(idx_F, idx_F, 1.0); b[idx_F] = node.T_front;
+            mb.add(idx_B, idx_B, 1.0); b[idx_B] = node.T_back;
             continue;
         }
 
