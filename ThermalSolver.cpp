@@ -187,8 +187,16 @@ void ThermalSolver::build_topology() {
 void ThermalSolver::calculate_view_factors(int samples) {
     std::cout << "[MCRT] Calculating View Factors (" << samples << " rays/node)..." << std::endl;
 
+    // 可以在这里打印一下最大线程数
+    std::cout << "Max Threads available: " << omp_get_max_threads() << std::endl;
+
     #pragma omp parallel for 
     for (int i = 0; i < nodes.size(); ++i) {
+        // --- 添加这段测试代码 (测试完记得删掉，否则会刷屏) ---
+        if (i < 100) { // 只打印前几个，防止控制台爆炸
+            printf("Node %d processed by Thread ID: %d\n", i, omp_get_thread_num());
+        }
+        // ----------------------------------------------------
         ThermalNode& node = nodes[i];
 
         // 计算节点的【正面】辐射

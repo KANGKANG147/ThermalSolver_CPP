@@ -1,6 +1,7 @@
 #pragma once // 防止头文件被重复包含
 #include <cmath>
 #include <iostream>
+#include <random> // 引入随机数库
 
 const double EPSILON = 1e-6;
 const double SIGMA = 5.67e-8;
@@ -21,7 +22,10 @@ inline Vec3 cross(const Vec3 & a, const Vec3 & b) { return { a.y * b.z - a.z * b
 
 // 0到1随机数
 inline double random_double() {
-    return rand() / (RAND_MAX + 1.0);
+    // static thread_local 保证生成器只初始化一次，且每个线程一份
+    static thread_local std::mt19937 generator(std::random_device{}());
+    std::uniform_real_distribution<double> distribution(0.0, 1.0);
+    return distribution(generator);
 }
 
 // 建立局部坐标系 (Orthonormal Basis)
