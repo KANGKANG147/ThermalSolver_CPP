@@ -17,7 +17,7 @@ struct AMGLevel {
 class AMGSolver {
 public:
     std::vector<AMGLevel> levels;
-    int max_levels = 10;
+    int max_levels = 8;
     int coarse_size_limit = 50; // 当矩阵小于这个大小时停止粗化
 
     // =====================================

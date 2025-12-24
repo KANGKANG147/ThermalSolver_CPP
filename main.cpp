@@ -68,10 +68,8 @@ int main() {
 
     solver.update_shadows(start_sun);
 
-    // 预热 10 步，每步内部迭代 50 次
-    for (int k = 0; k < 10; k++) {
-        solver.solve_step(dt, start_h, start_sun, weather, true);
-    }
+    //稳态初始化
+    solver.solve_step(dt, start_h, start_sun, weather, true);
     std::cout << " Done." << std::endl;
 
     // 6. 瞬态模拟循环
