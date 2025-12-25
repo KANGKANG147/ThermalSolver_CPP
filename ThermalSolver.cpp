@@ -190,11 +190,16 @@ void ThermalSolver::calculate_view_factors(int samples) {
     // 可以在这里打印一下最大线程数
     std::cout << "Max Threads available: " << omp_get_max_threads() << std::endl;
 
-    #pragma omp parallel for 
+#pragma omp parallel for 
     for (int i = 0; i < nodes.size(); ++i) {
-        // --- 添加这段测试代码 (测试完记得删掉，否则会刷屏) ---
-        if (i < 100) { // 只打印前几个，防止控制台爆炸
-            printf("Node %d processed by Thread ID: %d\n", i, omp_get_thread_num());
+        // 逻辑：只要当前线程不是主线程(0)，就打印一次，证明有帮手在干活
+    // 或者是每隔 100 个节点打印一次，这样能覆盖到所有线程的负责区域
+        if (omp_get_thread_num() != 0 && i % 50 == 0) {
+            printf(">>> Worker Thread Active! ID: %d processing Node %d\n", omp_get_thread_num(), i);
+        }
+        // 主线程也偶尔报个到，证明没死锁
+        if (omp_get_thread_num() == 0 && i == 0) {
+            printf(">>> Master Thread (0) started.\n");
         }
         // ----------------------------------------------------
         ThermalNode& node = nodes[i];
