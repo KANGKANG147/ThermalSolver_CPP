@@ -99,7 +99,10 @@ struct ThermalNode {
     double J_front = 0.0;
     double J_back = 0.0;
 
-    // 净辐射热流 Q_rad (Watts): 最终算出来用于加热节点的能量
+    // 长波净辐射热流 Q_rad (Watts): 
     double Q_rad_front = 0.0;
     double Q_rad_back = 0.0;
+
+    // 太阳短波辐射吸收热流 (Watts)
+    double Q_solar_absorbed = 0.0;
 };

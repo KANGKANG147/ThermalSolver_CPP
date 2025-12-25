@@ -5,6 +5,8 @@
 #include "BVH.h"
 #include "LinearAlgebra.h"
 #include "AMGSolver.h"
+#include <fstream>
+#include <filesystem>
 
 class ThermalSolver {
 public:
@@ -14,6 +16,13 @@ public:
     // AMG 求解器实例
     AMGSolver amg_solver;
     bool amg_initialized = false;
+
+    // 场景特征尺度 (用于计算自适应 Bias)
+    // 初始化为 0.0，表示还没计算过
+    double scene_scale = 0.0;
+
+    // 辅助函数：计算场景包围盒和尺度
+    void ensure_scene_scale();
 
     // 构建拓扑连接（顶点焊接、横向导热）
     void build_topology();
@@ -34,4 +43,9 @@ private:
     // 内部辅助函数
     std::pair<double, double> get_convection_params(const ThermalNode& node, bool is_front, const WeatherData& w);
     double calc_h_rad(double T_surf_K, double T_env_K, double epsilon);
+
+    // 缓存系统辅助函数
+    size_t compute_geometry_checksum(int samples);
+    bool load_vf_cache(const std::string& filename, int samples);
+    void save_vf_cache(const std::string& filename, int samples);
 };
