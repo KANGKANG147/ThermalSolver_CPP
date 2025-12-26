@@ -312,6 +312,7 @@ void ThermalSolver::update_shadows(const Vec3& sun_dir) {
     // 例如：100米的大楼 -> Bias = 1cm
     //       0.1米的手机 -> Bias = 0.01mm
     // 同时设置一个极小值 (如 1e-6) 防止 Bias 变为 0
+    ensure_scene_scale();
     double adaptive_bias = std::max(1e-6, scene_scale * 1e-4);
 
     Vec3 ray_dir = normalize(sun_dir); 
