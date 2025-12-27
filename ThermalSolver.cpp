@@ -689,6 +689,9 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
         Vector b(DOFs, 0.0);
         Vector x(DOFs, 0.0);
 
+        // 归一化太阳向量，避免重复计算
+        Vec3 sun_vec = normalize(sun_dir);
+
         for (int i = 0; i < N; ++i) {
             ThermalNode& node = nodes[i];
             int idx_F = 2 * i; // Front 自由度索引
@@ -724,16 +727,6 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             diag_F += conv_f.first * node.area;// hA 加到左边
             rhs_F += conv_f.first * node.area * conv_f.second;// hA * T_fluid 加到右边
 
-            // 计算太阳热负荷 (Watts)
-            double n_dot_s = dot(node.normal, normalize(sun_dir));
-            // 公式: Solar_Inteny * Area * Absorp * Shadow * cos(theta)
-            // max(0.0, ...) 确保背阳面不算
-            double solar_load = w.solar * node.area * node.solar_absorp * node.shadow_factor * std::max(0.0, n_dot_s);
-            node.Q_solar_absorbed = solar_load;
-
-            // 将其加到方程右端项 (RHS) 用于求解温度
-            rhs_F += solar_load;
-
             // 内部热源
             rhs_F += 0.5 * node.Q_gen_total;
 
@@ -747,10 +740,6 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
                 diag_F += link.conductance;
                 mb.add(idx_F, 2 * link.neighbor_idx, -link.conductance);
             }
-
-            // 写入 Front 矩阵行
-            mb.add(idx_F, idx_F, diag_F);
-            b[idx_F] = rhs_F;
 
             // ---------------------------------------------------------
             // 构建 Back 方程 (idx_B)
@@ -771,6 +760,26 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             // 内部热源 (Back Share 50%)
             rhs_B += 0.5 * node.Q_gen_total;
 
+            // ---------------------------------------------------------
+            // ★★★ 核心修改：双面太阳光照计算 ★★★
+            // ---------------------------------------------------------
+            double cos_theta = dot(node.normal, sun_vec);
+
+            // 计算总吸收功率 (注意这里用 abs，不再强制为 0)
+            // 公式: Solar * Area * Absorp * Shadow * |cos(theta)|
+            double solar_power = w.solar * node.area * node.solar_absorp * node.shadow_factor * std::abs(cos_theta);
+
+            node.Q_solar_absorbed = solar_power; // 记录总吸收用于调试
+
+            if (cos_theta > 0.0) {
+                // 太阳在正面 (Front Facing) -> 加热 Front 节点
+                rhs_F += solar_power;
+            }
+            else {
+                // 太阳在背面 (Back Facing) -> 加热 Back 节点
+                rhs_B += solar_power;
+            }
+
             // 辐射 (Back) - 仅当非绝热时计算
             if (node.bc_back.type != CONV_INSULATED) {
                 // 基础 MCRT 辐射热流
@@ -787,6 +796,10 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             // 横向导热 (Back)
             // 目前模型假设横向导热主要通过 Front 节点连接，Back 节点通常无横向连接
             // 如果您的模型支持多层横向导热，可以在此添加循环
+
+            // 写入 Front 矩阵行
+            mb.add(idx_F, idx_F, diag_F);
+            b[idx_F] = rhs_F;
 
             // 写入 Back 矩阵行
             mb.add(idx_B, idx_B, diag_B);

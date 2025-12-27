@@ -8,9 +8,20 @@
 struct GlobalSettings {
     std::string obj_file = "chuan.tai";
     std::string weather_file = "weather.txt";
-    double start_time = 6.0;
-    double end_time = 16.0;
-    double dt = 0.5;
+    DateTime start_date_time;
+    DateTime end_date_time;
+    double dt = 300.0;
+
+    // [新增] 世界坐标系参数
+    double latitude = 39.90;    // 默认北京
+    double longitude = 116.40;
+    double time_zone = 8.0;     // UTC+8
+    double north_angle = 0.0;   // 模型Y轴就是正北
+
+    // [新增] 模拟日期
+    int year = 2024;
+    int month = 7;
+    int day = 21;
 };
 
 class ConfigSystem {

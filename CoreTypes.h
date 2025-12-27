@@ -1,7 +1,82 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <cmath>
 #include "MathUtils.h"
+
+// 绝对时间结构体
+struct DateTime {
+    int year;
+    int month;
+    int day;
+    double hour; // 0.0 - 24.0 (包含分秒的小数)
+
+    // 辅助：获取当前是一年中的第几天 (Day of Year 1-366)
+    int get_day_of_year() const {
+        static const int days_per_month[] = { 0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+        int doy = 0;
+        for (int i = 1; i < month; ++i) doy += days_per_month[i];
+        doy += day;
+        // 闰年修正
+        bool is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        if (is_leap && month > 2) doy++;
+        return doy;
+    }
+
+    // 比较函数
+    bool operator<(const DateTime& other) const {
+        if (year != other.year) return year < other.year;
+        if (month != other.month) return month < other.month;
+        if (day != other.day) return day < other.day;
+        return hour < other.hour;
+    }
+};
+
+// 时间推进函数 (处理跨天/跨月/跨年)
+inline void advance_time(DateTime& dt, double dt_seconds) {
+    dt.hour += dt_seconds / 3600.0;
+
+    // 如果超过 24 小时，进位到下一天
+    while (dt.hour >= 24.0) {
+        dt.hour -= 24.0;
+        dt.day++;
+
+        // 简单的月份进位逻辑
+        static const int days_in_month[] = { 0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+        int dim = days_in_month[dt.month];
+
+        // 闰年检查
+        if (dt.month == 2) {
+            bool is_leap = (dt.year % 4 == 0 && dt.year % 100 != 0) || (dt.year % 400 == 0);
+            if (is_leap) dim = 29;
+        }
+
+        if (dt.day > dim) {
+            dt.day = 1;
+            dt.month++;
+            if (dt.month > 12) {
+                dt.month = 1;
+                dt.year++;
+            }
+        }
+    }
+}
+
+// 计算两个时间点的总秒数差 (用于计算 Steps)
+// 简化版：仅适用于年份跨度不大的情况
+inline double get_duration_seconds(const DateTime& start, const DateTime& end) {
+    // 简化算法：仅计算天数差 * 24 * 3600 + 小时差
+    // 注意：跨年逻辑这里简化处理，假设年份相同或相邻
+    int doy_start = start.get_day_of_year();
+    int doy_end = end.get_day_of_year();
+    int year_diff = end.year - start.year;
+
+    // 加上年份带来的天数 (粗略按365)
+    int day_diff = (doy_end + year_diff * 365) - doy_start;
+
+    double hour_diff = (day_diff * 24.0) + (end.hour - start.hour);
+    return hour_diff * 3600.0;
+}
 
 //  材质定义
 struct Material {

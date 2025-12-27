@@ -6,6 +6,7 @@
 #include "ConfigSystem.h"
 #include "WeatherSystem.h"
 #include "ThermalSolver.h"
+#include "SolarSystem.h"
 
 // ==========================================
 // 主程序
@@ -55,21 +56,37 @@ int main() {
     for (int idx : surf_indices) out_csv << "," << g_nodes[idx].part_name << "_N" << idx;
     out_csv << "\n";
     */
-    // 4. 准备模拟参数
-    double start_h = config.settings.start_time;
-    double end_h = config.settings.end_time;
-    double dt = config.settings.dt;
-
+   
     // 5. 稳态初始化 (预热)
     std::cout << "\n[1/3] Pre-heating (Steady State Init)..." << std::endl;
-    double start_sun_ang = 3.14159 * (start_h - 6.0) / 12.0;
-    Vec3 start_sun = { std::cos(start_sun_ang), 0.5 * std::cos(start_sun_ang), std::sin(start_sun_ang) };
-    if (weather.get_weather(start_h).solar <= 1.0) start_sun = { 0,0,-1 };
+    DateTime curr_time = config.settings.start_date_time; // 这里的 curr_time 是动态的
 
-    solver.update_shadows(start_sun);
+    SolarVector start_sun = SolarSystem::calculate_model_sun(
+        curr_time.year, curr_time.month, curr_time.day,
+        curr_time.hour,
+        config.settings.time_zone,
+        config.settings.latitude, config.settings.longitude,
+        config.settings.north_angle
+    );
+
+    // 获取天气数据 
+    // 逻辑：稳态初始化直接取仿真开始时刻对应的天气
+    // 假设 Weather File 的 Day 1 = Simulation Start Day
+    // Weather Query Hour = (0天 * 24) + current_hour
+    double init_weather_query = curr_time.hour;
+    WeatherData w_init = weather.get_weather(init_weather_query);
+
+    Vec3 init_sun_dir = start_sun.dir;
+    // 如果 SPA 说是晚上，或者天气文件说辐射极低
+    if (start_sun.is_night || w_init.solar <= 1.0) {
+        init_sun_dir = { 0, 0, -1 };
+    }
+
+    // 更新一次初始阴影
+    if (!start_sun.is_night) solver.update_shadows(init_sun_dir);
 
     //稳态初始化
-    solver.solve_step(dt, start_h, start_sun, weather, true);
+    solver.solve_step(config.settings.dt, init_weather_query, init_sun_dir, weather, true);
     std::cout << " Done." << std::endl;
 
     // 6. 瞬态模拟循环
@@ -78,42 +95,92 @@ int main() {
     std::ofstream out_csv("results.csv");
     out_csv << "Time(h),Node_0_Temp_Front,Node_0_Temp_Back\n";
 
-    int steps = (int)((end_h - start_h) * 3600.0 / dt);
+    // 计算总步数 (基于秒数差)
+    double total_seconds = get_duration_seconds(config.settings.start_date_time, config.settings.end_date_time);
+    int steps = (int)(total_seconds / config.settings.dt);
+
+    // 如果 start > end，steps 会是负数，提示错误
+    if (steps <= 0) {
+        std::cerr << "Error: Start time is later than End time!" << std::endl;
+        return -1;
+    }
+
     double last_output_time = -9999;
     int frame_count = 0;
 
+    // 记录开始时的 Day of Year，用于计算经过的天数
+    int start_doy = config.settings.start_date_time.get_day_of_year();
+    int start_year = config.settings.start_date_time.year;
+
     for (int i = 0; i <= steps; i++) {
-        double current_sec = i * dt;
-        double hour = start_h + (current_sec / 3600.0);
+        double elapsed_sec = i * config.settings.dt;
+        // ==========================================
+        // ★★★ 核心修改：使用 NREL SPA 计算太阳 ★★★
+        // ==========================================
+        SolarVector sun = SolarSystem::calculate_model_sun(
+            config.settings.year,
+            config.settings.month,
+            config.settings.day,
+            curr_time.hour,
+            config.settings.time_zone,
+            config.settings.latitude,
+            config.settings.longitude,
+            config.settings.north_angle
+        );
 
-        // 计算太阳位置
-        double sun_ang = 3.14159 * (hour - 6.0) / 12.0;
-        Vec3 sun_dir = { std::cos(sun_ang), 0.5 * std::cos(sun_ang), std::sin(sun_ang) };
-        if (weather.get_weather(hour).solar <= 1.0) sun_dir = { 0,0,-1 };
+        // 2. 计算天气查询时间 (Weather Query Time)
+        // 算法： (当前年的DOY - 开始年的DOY) * 24.0 + 当前小时
+        // 这将生成一个连续增加的时间：6.0 -> 24.0 -> 30.0 (第二天6点)
+        // 正好对应 WeatherSystem 解析出来的连续数据。
 
-        // 更新阴影 (策略优化：如果步长很大，建议每步都更)
-        // 如果 dt > 900s，则每步都更；否则每15分钟更
-        if (dt >= 900.0 || (i % (int)(900 / dt) == 0)) {
-            if (hour <= 19.0) solver.update_shadows(sun_dir);
+        int current_doy = curr_time.get_day_of_year();
+        // 加上年份带来的天数差 (防止跨年出错)
+        int day_diff = (current_doy + (curr_time.year - start_year) * 365) - start_doy;
+
+        double weather_query_hour = (day_diff * 24.0) + curr_time.hour;
+
+        // 3. 查天气
+        // WeatherSystem 内部存储的是类似 5.9, 23.9, 24.0, 48.0 的数据
+        // 所以我们传 30.0 进去，它就能找到第二天的数据，而不是第一天的。
+        WeatherData w_curr = weather.get_weather(weather_query_hour);
+
+        // 最终太阳向量
+        Vec3 sun_dir = sun.dir;
+
+        // 如果是晚上，或者天气文件说没太阳，或者 SPA 算出在地平线以下
+        if (sun.is_night || w_curr.solar <= 1.0) {
+            sun_dir = { 0, 0, -1 }; // 强制设为无效方向
+        }
+
+        // 更新阴影 (仅白天且每隔一段时间)
+        if (!sun.is_night && (config.settings.dt >= 900.0 || (i % (int)(900 / config.settings.dt) == 0))) {
+            solver.update_shadows(sun_dir);
         }
 
         // 求解一步
-        solver.solve_step(dt, hour, sun_dir, weather, false);
+        solver.solve_step(config.settings.dt, weather_query_hour, sun_dir, weather, false);
 
         // 输出结果 (每20分钟)
-        if (current_sec - last_output_time >= 1200.0 - 0.1 || i == 0) {
+        if (elapsed_sec - last_output_time >= 1200.0 - 0.1 || i == 0) {
             // CSV 记录第0个节点的温度
             if (!solver.nodes.empty()) {
-                out_csv << std::fixed << std::setprecision(2) << hour << "," << solver.nodes[0].T_front << "\n";
+                out_csv << std::fixed << std::setprecision(2) 
+                    << elapsed_sec / 3600.0 << ","
+                    << curr_time.year << "," << curr_time.month << "," << curr_time.day << "," << curr_time.hour << ","
+                    << solver.nodes[0].T_front << "\n";
             }
 
             // VTK
             std::string vtk_name = "sim_" + std::to_string(frame_count++) + ".vtk";
-            config.export_vtk(vtk_name, hour, solver.nodes);
+            config.export_vtk(vtk_name, weather_query_hour, solver.nodes);
 
-            last_output_time = current_sec;
-            std::cout << "\rProgress: " << std::fixed << std::setprecision(1) << (double)i / steps * 100.0 << "%" << std::flush;
+            last_output_time = elapsed_sec;
+            std::cout << "\rProgress: " << (int)((double)i / steps * 100.0) << "% "
+                << curr_time.year << "-" << curr_time.month << "-" << curr_time.day << " "
+                << std::fixed << std::setprecision(1) << curr_time.hour << "h" << std::flush;
         }
+        // 时间推进
+        advance_time(curr_time, config.settings.dt);
     }
 
     std::cout << "\n[3/3] Simulation Complete." << std::endl;

@@ -41,7 +41,21 @@ bool ConfigSystem::load_config(const std::string& filename) {
         // --- 全局参数 ---
         if (key == "OBJ_FILE") ss >> this->settings.obj_file;
         else if (key == "WEATHER_FILE") ss >> this->settings.weather_file;
-        else if (key == "TIME_PARAMS") ss >> this->settings.start_time >> this->settings.end_time >> this->settings.dt;
+        else if (key == "SIM_START") {
+            ss >> settings.start_date_time.year
+                >> settings.start_date_time.month
+                >> settings.start_date_time.day
+                >> settings.start_date_time.hour;
+        }
+        else if (key == "SIM_END") {
+            ss >> settings.end_date_time.year
+                >> settings.end_date_time.month
+                >> settings.end_date_time.day
+                >> settings.end_date_time.hour;
+        }
+        else if (key == "DT") {
+            ss >> settings.dt;
+        }
 
         // --- Group 解析 ---
         else if (key == "BEGIN_GROUP") {
@@ -58,6 +72,24 @@ bool ConfigSystem::load_config(const std::string& filename) {
             }
             inside_group = false;
         }
+
+        // 解析地理位置
+        else if (key == "GEO_LOCATION") {
+            ss >> this->settings.latitude
+                >> this->settings.longitude
+                >> this->settings.time_zone;
+        }
+        // 解析日期
+        else if (key == "SIM_DATE") {
+            ss >> this->settings.year
+                >> this->settings.month
+                >> this->settings.day;
+        }
+        // 解析模型朝向
+        else if (key == "MODEL_HEADING") {
+            ss >> this->settings.north_angle;
+        }
+
         else if (inside_group) {
             if (key == "NAME") {
                 // 读取剩余整行作为名字（防止名字里有空格）
