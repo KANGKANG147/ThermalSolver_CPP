@@ -83,7 +83,12 @@ int main() {
     }
 
     // 更新一次初始阴影
-    if (!start_sun.is_night) solver.update_shadows(init_sun_dir);
+    if (!start_sun.is_night && w_init.solar > 1.0) {
+        solver.update_shadows(init_sun_dir);
+    } else {
+        // 初始无光，重置阴影系数
+        for (auto& node : solver.nodes) node.shadow_factor = 1.0;
+    }
 
     //稳态初始化
     solver.solve_step(config.settings.dt, init_weather_query, init_sun_dir, weather, true);
@@ -93,7 +98,7 @@ int main() {
     std::cout << "\n[2/3] Simulating Transient..." << std::endl;
 
     std::ofstream out_csv("results.csv");
-    out_csv << "Time(h),Node_0_Temp_Front,Node_0_Temp_Back\n";
+    out_csv << "AbsTime(h),Date,Hour,Temp_Front,Temp_Back,Solar_W_m2\n";
 
     // 计算总步数 (基于秒数差)
     double total_seconds = get_duration_seconds(config.settings.start_date_time, config.settings.end_date_time);
@@ -105,22 +110,42 @@ int main() {
         return -1;
     }
 
-    double last_output_time = -9999;
     int frame_count = 0;
 
     // 记录开始时的 Day of Year，用于计算经过的天数
     int start_doy = config.settings.start_date_time.get_day_of_year();
     int start_year = config.settings.start_date_time.year;
 
-    for (int i = 0; i <= steps; i++) {
+    // --- 输出第 0 帧 (稳态结果) ---
+    // 这样 results.csv 和 vtk 都会包含 t=0 的状态
+    {
+        if (!solver.nodes.empty()) {
+            out_csv << std::fixed << std::setprecision(2)
+                << init_weather_query << ","
+                << curr_time.year << "/" << curr_time.month << "/" << curr_time.day << ","
+                << curr_time.hour << ","
+                << solver.nodes[0].T_front << ","
+                << solver.nodes[0].T_back << ","
+                << w_init.solar << ","
+                << (90.0 - start_sun.zenith) << "\n";
+        }
+        std::string vtk_name = "sim_" + std::to_string(frame_count++) + ".vtk";
+        config.export_vtk(vtk_name, init_weather_query, solver.nodes);
+
+        std::cout << "Output Initial State (Frame 0)" << std::endl;
+    }
+    double last_output_time = 0;
+
+    for (int i = 1; i <= steps; i++) {
+        // 1. 先推进时间 (t = t_prev + dt)
+        advance_time(curr_time, config.settings.dt);
+
         double elapsed_sec = i * config.settings.dt;
         // ==========================================
         // ★★★ 核心修改：使用 NREL SPA 计算太阳 ★★★
         // ==========================================
         SolarVector sun = SolarSystem::calculate_model_sun(
-            config.settings.year,
-            config.settings.month,
-            config.settings.day,
+            curr_time.year, curr_time.month, curr_time.day,
             curr_time.hour,
             config.settings.time_zone,
             config.settings.latitude,
@@ -146,28 +171,32 @@ int main() {
 
         // 最终太阳向量
         Vec3 sun_dir = sun.dir;
+        bool has_effective_sun = (!sun.is_night) && (w_curr.solar > 1.0);
 
-        // 如果是晚上，或者天气文件说没太阳，或者 SPA 算出在地平线以下
-        if (sun.is_night || w_curr.solar <= 1.0) {
-            sun_dir = { 0, 0, -1 }; // 强制设为无效方向
-        }
-
-        // 更新阴影 (仅白天且每隔一段时间)
-        if (!sun.is_night && (config.settings.dt >= 900.0 || (i % (int)(900 / config.settings.dt) == 0))) {
+        if (has_effective_sun) {
+            // 每一步都更新阴影
             solver.update_shadows(sun_dir);
+        }
+        else {
+            sun_dir = { 0, 0, -1 }; // 无效方向
+            // 无光时重置阴影，防止下午的阴影“冻结”到晚上
+            for (auto& node : solver.nodes) node.shadow_factor = 1.0;
         }
 
         // 求解一步
         solver.solve_step(config.settings.dt, weather_query_hour, sun_dir, weather, false);
 
         // 输出结果 (每20分钟)
-        if (elapsed_sec - last_output_time >= 1200.0 - 0.1 || i == 0) {
+        if (elapsed_sec - last_output_time >= 1200.0 - 0.1) {
             // CSV 记录第0个节点的温度
             if (!solver.nodes.empty()) {
-                out_csv << std::fixed << std::setprecision(2) 
-                    << elapsed_sec / 3600.0 << ","
-                    << curr_time.year << "," << curr_time.month << "," << curr_time.day << "," << curr_time.hour << ","
-                    << solver.nodes[0].T_front << "\n";
+                out_csv << std::fixed << std::setprecision(2)
+                    << weather_query_hour << ","
+                    << curr_time.year << "/" << curr_time.month << "/" << curr_time.day << ","
+                    << curr_time.hour << ","
+                    << solver.nodes[0].T_front << ","
+                    << solver.nodes[0].T_back << ","
+                    << w_curr.solar << "\n";
             }
 
             // VTK
@@ -176,11 +205,9 @@ int main() {
 
             last_output_time = elapsed_sec;
             std::cout << "\rProgress: " << (int)((double)i / steps * 100.0) << "% "
-                << curr_time.year << "-" << curr_time.month << "-" << curr_time.day << " "
-                << std::fixed << std::setprecision(1) << curr_time.hour << "h" << std::flush;
+                << curr_time.day << "d " << std::fixed << std::setprecision(1) << curr_time.hour << "h "
+                << "(Solar: " << w_curr.solar << " W/m2)" << std::flush;
         }
-        // 时间推进
-        advance_time(curr_time, config.settings.dt);
     }
 
     std::cout << "\n[3/3] Simulation Complete." << std::endl;

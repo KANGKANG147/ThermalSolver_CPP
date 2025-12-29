@@ -72,7 +72,7 @@ public:
         SolarVector out;
         out.azimuth = spa.azimuth;
         out.zenith = spa.zenith;
-
+        std::cout << "azimuth" << spa.azimuth<< "zenith" << spa.zenith << std::endl;
         // 判断是否是夜晚
         // Zenith = 0 (头顶), 90 (地平线). 大于90即太阳下山
         // 考虑一点大气折射余量 (90.5度)

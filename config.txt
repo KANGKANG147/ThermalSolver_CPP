@@ -7,11 +7,12 @@ WEATHER_FILE weather.txt
 SIM_START 1984 7 19 6.0
 # 仿真结束：1984年7月19日 22:00 
 SIM_END   1984 7 19 22.0
-DT        300.0
+DT        1200.0
 
 # 世界坐标设置
 # 北京 (北纬39.9, 东经116.4, UTC+8)
-GEO_LOCATION    47.2 88.5 -4.0
+# Taitherm里后两项取反
+GEO_LOCATION    47.2 -88.5 -4.0
 
 # 模拟日期: 夏至 (太阳最毒的时候)
 SIM_DATE        2024 6 21
@@ -20,7 +21,8 @@ SIM_DATE        2024 6 21
 # 0   = Y轴指北
 # 90  = Y轴指东 (车头朝东)
 # 180 = Y轴指南
-MODEL_HEADING   0.0
+# Taitherm里＋270° or -90°
+MODEL_HEADING   270.0
 
 # ==========================================
 # Group 1: 船体外壳 (水上部分)
