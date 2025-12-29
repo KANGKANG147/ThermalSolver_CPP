@@ -735,10 +735,11 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             diag_F += K;
             mb.add(idx_F, idx_B, -K);
 
-            // 导热 (横向)
+            // 横向导热 (Front) - 承担 50%
             for (auto& link : node.neighbors) {
-                diag_F += link.conductance;
-                mb.add(idx_F, 2 * link.neighbor_idx, -link.conductance);
+                double k_lat_part = link.conductance * 0.5; // 分摊 50%
+                diag_F += k_lat_part;
+                mb.add(idx_F, 2 * link.neighbor_idx, -k_lat_part);
             }
 
             // ---------------------------------------------------------
@@ -793,9 +794,15 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
                 rhs_B += h_rad_b * node.T_back_next;  // 加到右边
             }
 
-            // 横向导热 (Back)
-            // 目前模型假设横向导热主要通过 Front 节点连接，Back 节点通常无横向连接
-            // 如果您的模型支持多层横向导热，可以在此添加循环
+            // 横向导热 (Back) - 承担剩余 50% 
+            // 允许热量在背面节点之间横向流动
+            for (auto& link : node.neighbors) {
+                double k_lat_part = link.conductance * 0.5; // 分摊 50%
+                diag_B += k_lat_part;
+
+                // 注意：邻居的 Back 节点索引是 [2 * neighbor_idx + 1]
+                mb.add(idx_B, 2 * link.neighbor_idx + 1, -k_lat_part);
+            }
 
             // 写入 Front 矩阵行
             mb.add(idx_F, idx_F, diag_F);
