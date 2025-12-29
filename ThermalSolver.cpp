@@ -639,7 +639,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
     int max_iters = is_steady_init ? 100 : 50; // 初始最大迭代数
     int current_iter = 0;
 
-    // [修正2] 定义松弛因子 (0.0 < omega <= 1.0)
+    // 定义松弛因子 (0.0 < omega <= 1.0)
     // 0.6 意味着新值取 60%，旧值保留 40%。这能有效抑制 T^4 的震荡。
     double relaxation = is_steady_init ? 0.5 : 0.8;
 
@@ -648,6 +648,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
     double max_resid_prev = 0.0;    // 上一步最大温差
     double slope = 0.0;             // 容差斜率
     bool converged = false;
+    bool solver_failed = false; // 标记求解器是否严重故障
 
     // 如果是稳态初始化，我们将 dt 设为一个巨大的数，甚至可以忽略 mass 项
     double eff_dt = is_steady_init ? 1e4 : dt;
@@ -664,8 +665,6 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
         // 简易估算: 空气温度 * 0.9 (转为K)
         T_sky_K = (w.air_temp + 273.15) * 0.9;
     }
-   
-    
 
     // 初始化待求温度 (初猜值)
     for (int i = 0; i < N; ++i) {
@@ -813,17 +812,24 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             b[idx_B] = rhs_B;
         }
 
-        // --- B. AMG 求解 ---
+        // --- B. Eigen 求解 ---
         // 2. 组装矩阵
         SparseMatrix A = mb.build();
 
-        // 3. AMG Setup (如果是第一次，或者拓扑改变了，或者是线性化导致矩阵变了)
-        // 对于非线性热问题，矩阵A随温度变化 (h_rad)，所以每步都要 Setup (或者每几步)
-        amg_solver.setup(A);
+        // 3. 使用适配器直接求解
+        if (!eigen_solver.setup(A)) {
+            std::cerr << "[FATAL] Linear Solver Setup Failed at Iter " << current_iter << std::endl;
+            solver_failed = true;
+            break; // 退出内层循环，触发外层的“未收敛”处理
+        }
 
-        // 4. AMG Solve
+        // 4. Eigen Solve
         // 初始猜测 x 已经是 T_front_next
-        amg_solver.solve(b, x);
+        if (!eigen_solver.solve(b, x)) {
+            std::cerr << "[FATAL] Linear Solver Solve Failed at Iter " << current_iter << std::endl;
+            solver_failed = true;
+            break;
+        }
 
         // --- C. 计算残差和斜率 ---
         max_resid_curr = 0.0;
@@ -910,11 +916,16 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
         }
     }
 
-    // 5. 更新回物理节点
-    for (int i = 0; i < N; ++i) {
-        // 更新显示值
-        nodes[i].T_front = nodes[i].T_front_next;
-        nodes[i].T_back = nodes[i].T_back_next;
+    // 只有当求解器没有严重崩溃时，才更新温度
+    if (!solver_failed) {
+        for (int i = 0; i < N; ++i) {
+            nodes[i].T_front = nodes[i].T_front_next;
+            nodes[i].T_back = nodes[i].T_back_next;
+        }
+    }
+    else {
+        std::cerr << "[ERROR] Solver crashed. Keeping previous temperature." << std::endl;
+        // 不更新 nodes[i].T，相当于时间冻结，防止错误传播
     }
 }
 

@@ -4,7 +4,7 @@
 #include "WeatherSystem.h" 
 #include "BVH.h"
 #include "LinearAlgebra.h"
-#include "AMGSolver.h"
+#include "EigenSolverAdapter.h"
 #include <fstream>
 #include <filesystem>
 
@@ -13,9 +13,7 @@ public:
     std::vector<ThermalNode> nodes; // 所有的热节点
     BVHAccel bvh;
 
-    // AMG 求解器实例
-    AMGSolver amg_solver;
-    bool amg_initialized = false;
+    EigenSolverAdapter eigen_solver; // 求解器实例
 
     // 场景特征尺度 (用于计算自适应 Bias)
     // 初始化为 0.0，表示还没计算过

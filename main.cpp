@@ -7,11 +7,18 @@
 #include "WeatherSystem.h"
 #include "ThermalSolver.h"
 #include "SolarSystem.h"
-
+#include <Eigen/Sparse> // 关键：测试能否引用 Eigen
+#include <Eigen/Dense>
+void test_eigen_link() {
+    Eigen::VectorXd v(3);
+    v << 1, 2, 3;
+    std::cout << "Eigen Environment Check: PASSED. Vector size: " << v.size() << std::endl;
+}
 // ==========================================
 // 主程序
 // ==========================================
 int main() {
+    test_eigen_link();
     // 1. 初始化系统
     ConfigSystem config;
     WeatherSystem weather;
