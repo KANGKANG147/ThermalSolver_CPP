@@ -8,6 +8,7 @@ struct WeatherData {
     double air_temp;
     double solar;
     double wind;
+    double cloud;// Cloud Cover [0-10]
     double lwir;
 };
 

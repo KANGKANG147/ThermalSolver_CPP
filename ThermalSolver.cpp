@@ -655,17 +655,28 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
     // 如果是稳态初始化，我们将 dt 设为一个巨大的数，甚至可以忽略 mass 项
     double eff_dt = is_steady_init ? 1e4 : dt;
 
-    // 1. 预计算环境参数
-    bool use_lwir = (w.lwir > 10.0);
-    // 计算天空等效辐射温度 (Kelvin)
+    // 1. 计算天空等效辐射温度 (T_sky) - 引入云量修正
     double T_sky_K = 0.0;
-    if (use_lwir) {
-        // 如果有长波辐射实测值: T_sky = (LWIR / sigma)^0.25
+    double T_air_K = w.air_temp + 273.15;
+    if (w.lwir > 10.0) {
+        // 优先使用实测长波辐射
         T_sky_K = std::pow(w.lwir / SIGMA, 0.25);
-    }
+	}
     else {
-        // 简易估算: 空气温度 * 0.9 (转为K)
-        T_sky_K = (w.air_temp + 273.15) * 0.9;
+        // 使用 Swinbank 模型 + Berdahl & Martin 云量修正
+        // A. 晴空发射率 (Swinbank: 0.0000092 * T^2 约等于 0.7~0.8)
+        double eps_clear = 0.0000092 * T_air_K * T_air_K;
+
+        // B. 云量修正 (Cloud 0-10 -> 0.0-1.0)
+        double cloud_ratio = w.cloud / 10.0;
+        if (cloud_ratio < 0.0) cloud_ratio = 0.0;
+        if (cloud_ratio > 1.0) cloud_ratio = 1.0;
+
+        // eps_sky = eps_clear + (1 - eps_clear) * C (线性近似)
+        double eps_sky = eps_clear + (1.0 - eps_clear) * cloud_ratio;
+
+        // C. 反推天空温度
+        T_sky_K = T_air_K * std::pow(eps_sky, 0.25);
     }
 
     // 2. 太阳辐射分离
