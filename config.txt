@@ -6,16 +6,13 @@ WEATHER_FILE weather.txt
 # 仿真开始：1984年7月19日 6:00 
 SIM_START 1984 7 19 6.0
 # 仿真结束：1984年7月19日 22:00 
-SIM_END   1984 7 19 22.0
+SIM_END   1984 7 19 16.0
 DT        1200.0
 
 # 世界坐标设置
 # 北京 (北纬39.9, 东经116.4, UTC+8)
 # Taitherm里后两项取反
 GEO_LOCATION    47.2 -88.5 -4.0
-
-# 模拟日期: 夏至 (太阳最毒的时候)
-SIM_DATE        2024 6 21
 
 # 模型朝向: 
 # 0   = Y轴指北
@@ -32,10 +29,10 @@ BEGIN_GROUP
   NAME Hull
   TYPE CALCULATED
   MAT Steel
-  THICK 0.015
+  THICK 0.010
   INIT_TEMP 20.0
   BC_FRONT WIND 5.7 3.8
-  BC_BACK  FIXED 5.0 0.0
+  BC_BACK  FIXED 5.0 20.0
 END_GROUP
 
 # ==========================================
@@ -46,10 +43,10 @@ BEGIN_GROUP
   NAME Hull-Underwater
   TYPE CALCULATED
   MAT Steel
-  THICK 0.020
+  THICK 0.010
   INIT_TEMP 20.0
-  BC_FRONT FIXED 500.0 15.0
-  BC_BACK  FIXED 5.0 0.0
+  BC_FRONT FIXED 50.0 15.0
+  BC_BACK  FIXED 5.0 20.0
 END_GROUP
 
 # ==========================================
@@ -59,10 +56,10 @@ BEGIN_GROUP
   NAME Main Deck
   TYPE CALCULATED
   MAT Steel
-  THICK 0.012
+  THICK 0.010
   INIT_TEMP 20.0
   BC_FRONT WIND 5.7 3.8
-  BC_BACK  FIXED 5.0 0.0
+  BC_BACK  FIXED 5.0 20.0
 END_GROUP
 
 # ==========================================
@@ -72,10 +69,10 @@ BEGIN_GROUP
   NAME Upper Deck
   TYPE CALCULATED
   MAT Steel
-  THICK 0.010
+  THICK 0.005
   INIT_TEMP 20.0
   BC_FRONT WIND 5.7 3.8
-  BC_BACK  FIXED 5.0 0.0
+  BC_BACK  FIXED 5.0 25.0
 END_GROUP
 
 # ==========================================
@@ -85,10 +82,10 @@ BEGIN_GROUP
   NAME Aft Cabin
   TYPE CALCULATED
   MAT Steel
-  THICK 0.008
+  THICK 0.005
   INIT_TEMP 20.0
   BC_FRONT WIND 5.7 3.8
-  BC_BACK  FIXED 5.0 0.0
+  BC_BACK  FIXED 5.0 25.0
 END_GROUP
 
 # ==========================================
@@ -98,10 +95,10 @@ BEGIN_GROUP
   NAME Foreward Main Deck Room
   TYPE CALCULATED
   MAT Steel
-  THICK 0.008
+  THICK 0.005
   INIT_TEMP 20.0
   BC_FRONT WIND 5.7 3.8
-  BC_BACK  FIXED 5.0 0.0
+  BC_BACK  FIXED 5.0 25.0
 END_GROUP
 
 # ==========================================
@@ -111,10 +108,10 @@ BEGIN_GROUP
   NAME Forward Upper Deck Room
   TYPE CALCULATED
   MAT Steel
-  THICK 0.008
+  THICK 0.005
   INIT_TEMP 20.0
   BC_FRONT WIND 5.7 3.8
-  BC_BACK  FIXED 5.0 0.0
+  BC_BACK  FIXED 5.0 25.0
 END_GROUP
 
 # ==========================================
@@ -124,10 +121,10 @@ BEGIN_GROUP
   NAME Navigation Room
   TYPE CALCULATED
   MAT Steel
-  THICK 0.008
+  THICK 0.005
   INIT_TEMP 20.0
   BC_FRONT WIND 5.7 3.8
-  BC_BACK  FIXED 5.0 0.0
+  BC_BACK  FIXED 5.0 25.0
 END_GROUP
 
 # ==========================================
@@ -141,7 +138,7 @@ BEGIN_GROUP
   THICK 0.005
   INIT_TEMP 20.0
   BC_FRONT WIND 5.7 3.8
-  BC_BACK  FIXED 5.0 0.0
+  BC_BACK  FIXED 5.0 25.0
 END_GROUP
 
 # ==========================================
@@ -151,13 +148,13 @@ END_GROUP
 BEGIN_GROUP
   NAME Engine
   TYPE ASSIGNED
-  MAT Iron
+  MAT Steel
   THICK 0.005
   INIT_TEMP 88.0
   # 设置体积热源强度为 100,000 W/m^3
   HEAT_GEN_VOL 100000.0
-  BC_FRONT FIXED 5.0 0.0
-  BC_BACK  FIXED 5.0 0.0
+  BC_FRONT FIXED 10.0 0.0
+  BC_BACK  INSULATED
 END_GROUP
 
 # ==========================================
@@ -168,10 +165,10 @@ BEGIN_GROUP
   NAME Engine Room
   TYPE CALCULATED
   MAT Steel
-  THICK 0.010
-  INIT_TEMP 30.0
-  BC_FRONT FIXED 5.0 0.0
-  BC_BACK  FIXED 5.0 0.0
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 10.0 20.0
+  BC_BACK  FIXED 10.0 20.0
 END_GROUP
 
 # ==========================================
@@ -207,7 +204,7 @@ BEGIN_GROUP
   NAME Tall Stack Exhaust
   TYPE ASSIGNED
   MAT Steel
-  THICK 0.005
+  THICK 0.0015
   INIT_TEMP 250.0
   HEAT_GEN_VOL 10000000.0
   BC_FRONT WIND 5.7 3.8
@@ -221,8 +218,8 @@ BEGIN_GROUP
   NAME Short Stack Exhaust
   TYPE ASSIGNED
   MAT Steel
-  THICK 0.005
-  INIT_TEMP 230.0
+  THICK 0.0015
+  INIT_TEMP 200.0
   BC_FRONT WIND 5.7 3.8
   BC_BACK  INSULATED
 END_GROUP
@@ -234,10 +231,10 @@ BEGIN_GROUP
   NAME Lower Room Separation
   TYPE CALCULATED
   MAT Steel
-  THICK 0.005
+  THICK 0.0015
   INIT_TEMP 20.0
-  BC_FRONT FIXED 5.0 0.0
-  BC_BACK  FIXED 5.0 0.0
+  BC_FRONT FIXED 5.0 25.0
+  BC_BACK  FIXED 5.0 20.0
 END_GROUP
 
 # ==========================================
@@ -249,8 +246,8 @@ BEGIN_GROUP
   MAT Steel
   THICK 0.005
   INIT_TEMP 20.0
-  BC_FRONT FIXED 5.0 0.0
-  BC_BACK  FIXED 5.0 0.0
+  BC_FRONT FIXED 5.0 25.0
+  BC_BACK  FIXED 5.0 25.0
 END_GROUP
 
 # ==========================================
@@ -262,8 +259,8 @@ BEGIN_GROUP
   MAT Steel
   THICK 0.005
   INIT_TEMP 20.0
-  BC_FRONT FIXED 5.0 0.0
-  BC_BACK  FIXED 5.0 0.0
+  BC_FRONT FIXED 5.0 25.0
+  BC_BACK  FIXED 5.0 25.0
 END_GROUP
 
 # ==========================================
@@ -273,8 +270,8 @@ BEGIN_GROUP
   NAME Navigation Center Floor
   TYPE CALCULATED
   MAT Steel
-  THICK 0.008
+  THICK 0.005
   INIT_TEMP 20.0
-  BC_FRONT FIXED 5.0 0.0
-  BC_BACK  FIXED 5.0 0.0
+  BC_FRONT FIXED 5.0 25.0
+  BC_BACK  FIXED 5.0 25.0
 END_GROUP

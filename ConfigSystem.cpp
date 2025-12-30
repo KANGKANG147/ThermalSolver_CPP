@@ -7,10 +7,18 @@
 
 void ConfigSystem::init_defaults() {
     // 1. 初始化材质库 (这部分通常是固定的，或者也可以从文件读)
-    mat_lib["Steel"] = { 45.0, 7850.0, 460.0, 0.7, 0.9 };
+    //  材质定义
+    /*struct Material {
+        double k;           // 导热率
+        double rho;         // 密度
+        double Cp;          // 比热
+        double absorptivity; // 太阳吸收率
+        double emissivity;   // 红外发射率
+    };*/
+    mat_lib["Steel"] = { 52.019, 7768.98, 460.967, 0.74, 0.74 };
     mat_lib["Iron"] = { 40.0, 7800.0, 500.0, 0.8, 0.85 };
-    mat_lib["Glass"] = { 1.0,  2500.0, 840.0, 0.1, 0.9 };
-    mat_lib["Insulation"] = { 0.04, 50.0, 1000.0, 0.5, 0.9 };
+    mat_lib["Glass"] = { 0.81, 2800.0, 800.0, 0.1, 0.9 };
+    mat_lib["Insulation"] = { 0.04, 50.0, 1000.0, 0.05, 0.95 };
 
     // 设置硬编码默认配置作为保底
     ConvectionBC bc_weather = { CONV_WIND, 0, 0, 10.0, 3.0 };
