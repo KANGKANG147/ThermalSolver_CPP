@@ -5,6 +5,7 @@
 #include "BVH.h"
 #include "LinearAlgebra.h"
 #include "EigenSolverAdapter.h"
+#include "SolarRadiation.h"
 #include <fstream>
 #include <filesystem>
 
@@ -35,7 +36,9 @@ public:
     void solve_radiosity_system(double env_temp_K);
 
     // 核心计算步
-    void solve_step(double dt, double hour, const Vec3& sun_dir, WeatherSystem& weather, bool is_steady_init);
+    void solve_step(double dt, double hour, const Vec3& sun_dir, 
+                    double zenith_deg, int day_of_year,
+                    WeatherSystem& weather, bool is_steady_init);
 
 private:
     // 内部辅助函数

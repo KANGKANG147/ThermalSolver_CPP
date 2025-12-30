@@ -1,8 +1,8 @@
-#include "ThermalSolver.h"
 #include <iostream>
 #include <map>
 #include <algorithm>
 #include <omp.h>
+#include "ThermalSolver.h"
 
 // 辅助结构体
 struct VertexKey {
@@ -626,7 +626,9 @@ void ThermalSolver::solve_radiosity_system(double env_temp_K) {
     }
 }
 
-void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, WeatherSystem& weather, bool is_steady_init) {
+void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, 
+                               double zenith_deg, int day_of_year,
+                               WeatherSystem& weather, bool is_steady_init) {
     int N = nodes.size();
     int DOFs = 2 * N;
     WeatherData w = weather.get_weather(hour);
@@ -666,6 +668,10 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
         T_sky_K = (w.air_temp + 273.15) * 0.9;
     }
 
+    // 2. 太阳辐射分离
+    // w.solar 是 GHI, zenith_deg 来自 SPA, day_of_year 来自日期计算
+    SolarComponents sol = SolarRadiation::split_GHI_Erbs(w.solar, zenith_deg, day_of_year);
+
     // 初始化待求温度 (初猜值)
     for (int i = 0; i < N; ++i) {
         // 使用当前时刻的值作为非线性迭代的起点
@@ -690,6 +696,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
 
         // 归一化太阳向量，避免重复计算
         Vec3 sun_vec = normalize(sun_dir);
+        double albedo = 0.2; // 地面反射率
 
         for (int i = 0; i < N; ++i) {
             ThermalNode& node = nodes[i];
@@ -761,24 +768,42 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, Weat
             rhs_B += 0.5 * node.Q_gen_total;
 
             // ---------------------------------------------------------
-            // ★★★ 核心修改：双面太阳光照计算 ★★★
+            // 双面太阳光照计算 使用分离后的 DNI, DHI
             // ---------------------------------------------------------
             double cos_theta = dot(node.normal, sun_vec);
 
-            // 计算总吸收功率 (注意这里用 abs，不再强制为 0)
-            // 公式: Solar * Area * Absorp * Shadow * |cos(theta)|
-            double solar_power = w.solar * node.area * node.solar_absorp * node.shadow_factor * std::abs(cos_theta);
-
-            node.Q_solar_absorbed = solar_power; // 记录总吸收用于调试
-
+            // 1. 直射光 (Direct Beam) -> DNI
+            double Q_direct = 0.0;
             if (cos_theta > 0.0) {
-                // 太阳在正面 (Front Facing) -> 加热 Front 节点
-                rhs_F += solar_power;
+                Q_direct = sol.DNI * node.area * cos_theta * node.shadow_factor * node.solar_absorp;
+                rhs_F += Q_direct;
             }
             else {
-                // 太阳在背面 (Back Facing) -> 加热 Back 节点
-                rhs_B += solar_power;
+                if (node.bc_back.type != CONV_INSULATED) {
+                    double Q_direct_back = sol.DNI * node.area * std::abs(cos_theta) * node.shadow_factor * node.solar_absorp;
+                    rhs_B += Q_direct_back;
+                }
             }
+
+            // 2. 漫射光 (Diffuse Sky) -> DHI
+            double Q_diff_F = sol.DHI * node.area * node.vf_sky_front * node.solar_absorp;
+            rhs_F += Q_diff_F;
+
+            if (node.bc_back.type != CONV_INSULATED) {
+                double Q_diff_B = sol.DHI * node.area * node.vf_sky_back * node.solar_absorp;
+                rhs_B += Q_diff_B;
+            }
+
+            // 3. 地面反射光 (Ground Reflected) -> GHI (近似)
+            double Q_ref_F = sol.GHI * albedo * (1.0 - node.vf_sky_front) * node.area * node.solar_absorp;
+            rhs_F += Q_ref_F;
+
+            if (node.bc_back.type != CONV_INSULATED) {
+                double Q_ref_B = sol.GHI * albedo * (1.0 - node.vf_sky_back) * node.area * node.solar_absorp;
+                rhs_B += Q_ref_B;
+            }
+
+            node.Q_solar_absorbed = Q_direct + Q_diff_F + Q_ref_F;
 
             // 辐射 (Back) - 仅当非绝热时计算
             if (node.bc_back.type != CONV_INSULATED) {

@@ -146,6 +146,7 @@
     <ClCompile Include="BVH.cpp" />
     <ClCompile Include="ConfigSystem.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="SolarRadiation.cpp" />
     <ClCompile Include="spa.c" />
     <ClCompile Include="ThermalSolver.cpp" />
     <ClCompile Include="WeatherSystem.cpp" />
@@ -158,6 +159,7 @@
     <ClInclude Include="EigenSolverAdapter.h" />
     <ClInclude Include="LinearAlgebra.h" />
     <ClInclude Include="MathUtils.h" />
+    <ClInclude Include="SolarRadiation.h" />
     <ClInclude Include="SolarSystem.h" />
     <ClInclude Include="spa.h" />
     <ClInclude Include="ThermalSolver.h" />

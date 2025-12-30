@@ -98,7 +98,7 @@ int main() {
     }
 
     //稳态初始化
-    solver.solve_step(config.settings.dt, init_weather_query, init_sun_dir, weather, true);
+    solver.solve_step(config.settings.dt, init_weather_query, init_sun_dir, start_sun.zenith, curr_time.get_day_of_year(), weather, true);
     std::cout << " Done." << std::endl;
 
     // 6. 瞬态模拟循环
@@ -191,7 +191,7 @@ int main() {
         }
 
         // 求解一步
-        solver.solve_step(config.settings.dt, weather_query_hour, sun_dir, weather, false);
+        solver.solve_step(config.settings.dt, weather_query_hour, sun_dir, sun.zenith, current_doy, weather, false);
 
         // 输出结果 (每20分钟)
         if (elapsed_sec - last_output_time >= 1200.0 - 0.1) {
