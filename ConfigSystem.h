@@ -34,7 +34,7 @@ public:
     bool load_config(const std::string& filename);
     bool load_obj_model(const std::string& filename, std::vector<ThermalNode>& out_nodes);
     void export_vtk(const std::string& filename, double current_time, const std::vector<ThermalNode>& nodes);
-
+    void export_results_tai_format(const std::string& filename, const std::vector<ThermalNode>& nodes);
 private:
     ConvectionBC parse_bc(std::stringstream& ss);
     PartProperty get_part_property(const std::string& group_name);

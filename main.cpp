@@ -9,16 +9,11 @@
 #include "SolarSystem.h"
 #include <Eigen/Sparse> // 关键：测试能否引用 Eigen
 #include <Eigen/Dense>
-void test_eigen_link() {
-    Eigen::VectorXd v(3);
-    v << 1, 2, 3;
-    std::cout << "Eigen Environment Check: PASSED. Vector size: " << v.size() << std::endl;
-}
+
 // ==========================================
 // 主程序
 // ==========================================
 int main() {
-    test_eigen_link();
     // 1. 初始化系统
     ConfigSystem config;
     WeatherSystem weather;
@@ -26,7 +21,7 @@ int main() {
 
     // 2. 加载配置和数据
     config.init_defaults();
-    config.load_config("config.txt"); // 如果找不到，会用代码里的默认值
+    config.load_config("Input/config.txt"); // 如果找不到，会用代码里的默认值
 
     // 注意：这里把 config 和 solver 连起来了，加载的模型直接放进 solver.nodes
     if (!config.load_obj_model(config.settings.obj_file, solver.nodes)) {
@@ -207,7 +202,7 @@ int main() {
             }
 
             // VTK
-            std::string vtk_name = "sim_" + std::to_string(frame_count++) + ".vtk";
+            std::string vtk_name = "Output/sim_" + std::to_string(frame_count++) + ".vtk";
             config.export_vtk(vtk_name, weather_query_hour, solver.nodes);
 
             last_output_time = elapsed_sec;
@@ -219,5 +214,7 @@ int main() {
 
     std::cout << "\n[3/3] Simulation Complete." << std::endl;
     out_csv.close();
+    // 输出tai格式
+    config.export_results_tai_format("Output/result_tai.txt", solver.nodes);
     return 0;
 }

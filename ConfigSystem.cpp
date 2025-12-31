@@ -231,6 +231,41 @@ void ConfigSystem::export_vtk(const std::string& filename, double current_time, 
     // std::cout << "Exported: " << filename << std::endl;
 }
 
+void ConfigSystem::export_results_tai_format(const std::string& filename, const std::vector<ThermalNode>& nodes) {
+    std::ofstream out(filename);
+    if (!out.is_open()) {
+        std::cerr << "Error: Could not open " << filename << " for writing." << std::endl;
+        return;
+    }
+
+    // 1. 设置高精度输出 
+    out << std::fixed << std::setprecision(14);
+
+    std::string current_group = "";
+
+    // 2. 设置高精度输出
+    out << std::fixed << std::setprecision(14);
+
+    // 3. 遍历所有节点（面片）输出温度
+    for (const auto& node : nodes) {
+        // 3. 检测组名是否发生变化
+        // 如果当前节点的 part_name 与上一个不同，说明进入了新 Group
+        if (node.part_name != current_group) {
+            current_group = node.part_name;
+
+            // 如果 OBJ 中未定义组名，代码默认为 "Default"，此处可直接输出
+            // 格式示例: g Body 或 g Hull
+            out << "g " << current_group << "\n";
+        }
+
+        // 4. 输出温度值 (格式: f <temp>)
+        out << "f " << node.T_front << "\n";
+    }
+
+    out.close();
+    std::cout << "[Export] Results exported to " << filename << " (tai format)" << std::endl;
+}
+
 // 私有辅助函数
 PartProperty ConfigSystem::get_part_property(const std::string& group_name) {
     if (project_config.count(group_name)) return project_config[group_name];
