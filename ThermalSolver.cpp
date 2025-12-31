@@ -247,6 +247,7 @@ void ThermalSolver::calculate_view_factors(int samples) {
         // 临时统计 map: key -> pair<目标ID, 目标正反>, value -> 命中次数
         std::map<std::pair<int, bool>, int> hits_front;
         int sky_hits_front = 0;
+        int sea_hits_front = 0;
         Vec3 origin_f = node.centroid + node.normal * ADAPTIVE_BIAS;// 发射点：质心沿法线向外偏移一点点
 
         for (int s = 0; s < samples; ++s) {
@@ -255,9 +256,20 @@ void ThermalSolver::calculate_view_factors(int samples) {
             // 查找最近的物体，距离上限设大一点
             HitInfo hit = bvh.intersect_closest(origin_f, dir, 1e20, i);
             // 击中了别的物体 (target)
-            if (hit.has_hit) hits_front[{hit.hit_node_index, hit.hit_front_side}]++;
-            // 击中天空
-            else sky_hits_front++;
+            if (hit.has_hit) {
+                hits_front[{hit.hit_node_index, hit.hit_front_side}]++;
+            }
+            else {
+                // 未击中船体 -> 判断是天还是海
+                // Z > 0 视为天空， Z <= 0 视为海面
+                // (注意：这里假设 Z=0 是海平面。如果你的海平面是其他高度，请修改此处)
+                if (dir.z > 0.0) {
+                    sky_hits_front++;
+                }
+                else {
+                    sea_hits_front++;
+                }
+            }
         }
 
         // 归一化并存入 rad_links_front
@@ -274,6 +286,7 @@ void ThermalSolver::calculate_view_factors(int samples) {
         if (node.bc_back.type != CONV_INSULATED) {
             std::map<std::pair<int, bool>, int> hits_back;
             int sky_hits_back = 0;
+            int sea_hits_back = 0;
             Vec3 origin_b = node.centroid - node.normal * ADAPTIVE_BIAS;// 向内偏移
             Vec3 normal_b = node.normal * -1.0;// 反向法线
 
@@ -281,8 +294,18 @@ void ThermalSolver::calculate_view_factors(int samples) {
                 // 1. 生成基于反向法线(-Normal)的随机射线
                 Vec3 dir = sample_hemisphere(normal_b);
                 HitInfo hit = bvh.intersect_closest(origin_b, dir, 1e20, i);
-                if (hit.has_hit) hits_back[{hit.hit_node_index, hit.hit_front_side}]++;
-                else sky_hits_back++;
+                if (hit.has_hit) {
+                    hits_back[{hit.hit_node_index, hit.hit_front_side}]++;
+                }
+                else {
+                    // 判断天/海
+                    if (dir.z > 0.0) {
+                        sky_hits_back++;
+                    }
+                    else {
+                        sea_hits_back++;
+                    }
+                }
             }
 
             node.rad_links_back.clear();
@@ -805,16 +828,40 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
                 rhs_B += Q_diff_B;
             }
 
-            // 3. 地面反射光 (Ground Reflected) -> GHI (近似)
-            double Q_ref_F = sol.GHI * albedo * (1.0 - node.vf_sky_front) * node.area * node.solar_absorp;
+            // 3. 海面反射光 (Ground Reflected) -> GHI (近似)
+            // --- 计算 Front 面的海面视角系数 ---
+            // 逻辑：VF_sea = 1.0 - VF_sky - VF_structure
+            double vf_struct_front = 0.0;
+            for (const auto& link : node.rad_links_front) {
+                vf_struct_front += link.view_factor;
+            }
+
+            double vf_sea_front = 1.0 - node.vf_sky_front - vf_struct_front;
+            // 数值稳定性钳位 (防止 MCRT 误差导致微小的负数)
+            if (vf_sea_front < 0.0) vf_sea_front = 0.0;
+            if (vf_sea_front > 1.0) vf_sea_front = 1.0;
+
+            double Q_ref_F = sol.GHI * albedo * vf_sea_front * node.area * node.solar_absorp;
             rhs_F += Q_ref_F;
 
             if (node.bc_back.type != CONV_INSULATED) {
-                double Q_ref_B = sol.GHI * albedo * (1.0 - node.vf_sky_back) * node.area * node.solar_absorp;
-                rhs_B += Q_ref_B;
-            }
+                double vf_struct_back = 0.0;
+                for (const auto& link : node.rad_links_back) {
+                    vf_struct_back += link.view_factor;
+                }
 
-            node.Q_solar_absorbed = Q_direct + Q_diff_F + Q_ref_F;
+                double vf_sea_back = 1.0 - node.vf_sky_back - vf_struct_back;
+                if (vf_sea_back < 0.0) vf_sea_back = 0.0;
+                if (vf_sea_back > 1.0) vf_sea_back = 1.0;
+
+                double Q_ref_B = sol.GHI * albedo * vf_sea_back * node.area * node.solar_absorp;
+                rhs_B += Q_ref_B;
+
+                node.Q_solar_absorbed = Q_direct + Q_diff_F + Q_ref_F + Q_ref_B;
+			}
+            else {
+                node.Q_solar_absorbed = Q_direct + Q_diff_F + Q_ref_F;
+            }
 
             // 辐射 (Back) - 仅当非绝热时计算
             if (node.bc_back.type != CONV_INSULATED) {
