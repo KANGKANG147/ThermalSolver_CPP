@@ -676,7 +676,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
     bool solver_failed = false; // 标记求解器是否严重故障
 
     // 如果是稳态初始化，我们将 dt 设为一个巨大的数，甚至可以忽略 mass 项
-    double eff_dt = is_steady_init ? 1e4 : dt;
+    double eff_dt = is_steady_init ? 1e10 : dt;
 
     // 1. 计算天空等效辐射温度 (T_sky) - 引入云量修正
     double T_sky_K = 0.0;
