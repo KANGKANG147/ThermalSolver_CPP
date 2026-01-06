@@ -528,9 +528,12 @@ bool ThermalSolver::load_vf_cache(const std::string& filename, int samples) {
     return true;
 }
 
-void ThermalSolver::solve_radiosity_system(double env_temp_K) {
+void ThermalSolver::solve_radiosity_system(double sky_temp_K, double ground_temp_K) {
     const double SIGMA = 5.67e-8;
-    double E_env = SIGMA * std::pow(env_temp_K, 4.0);
+
+    // 分别计算天空和海面的辐射强度
+    double E_sky = SIGMA * std::pow(sky_temp_K, 4.0);
+    double E_ground = SIGMA * std::pow(ground_temp_K, 4.0);
 
     // 收敛参数
     const double CONVERGENCE_TOL = 1e-6; // 辐射度收敛阈值 (W/m2)
@@ -551,12 +554,30 @@ void ThermalSolver::solve_radiosity_system(double env_temp_K) {
         // Front
         double T_f_K = node.T_front_next + 273.15;
         E_emit_f[i] = node.ir_emissivity * SIGMA * std::pow(T_f_K, 4.0);
-        node.J_front = E_emit_f[i] + (1.0 - node.ir_emissivity) * node.vf_sky_front * E_env;
+
+        // 计算 Front 被结构体遮挡的视角系数总和，用于推算 vf_ground
+        double vf_struct_sum_f = 0.0;
+        for (const auto& link : node.rad_links_front) {
+            vf_struct_sum_f += link.view_factor;
+        }
+        // 剩下的视野是看地面的 (防止浮点误差导致负数)
+        double vf_ground_front = 1.0 - node.vf_sky_front - vf_struct_sum_f;
+        if (vf_ground_front < 0.0) vf_ground_front = 0.0;
+
+        node.J_front = E_emit_f[i] + (1.0 - node.ir_emissivity) * (node.vf_sky_front * E_sky + vf_ground_front * E_ground);
 
         // Back
         double T_b_K = node.T_back_next + 273.15;
         E_emit_b[i] = node.ir_emissivity * SIGMA * std::pow(T_b_K, 4.0);
-        node.J_back = E_emit_b[i] + (1.0 - node.ir_emissivity) * node.vf_sky_back * E_env;
+
+        double vf_struct_sum_b = 0.0;
+        for (const auto& link : node.rad_links_back) {
+            vf_struct_sum_b += link.view_factor;
+        }
+        double vf_ground_back = 1.0 - node.vf_sky_back - vf_struct_sum_b;
+        if (vf_ground_back < 0.0) vf_ground_back = 0.0;
+
+        node.J_back = E_emit_b[i] + (1.0 - node.ir_emissivity) * (node.vf_sky_back * E_sky + vf_ground_back * E_ground);
     }
 
     // 2. 迭代求解 (Gauss-Seidel)
@@ -570,13 +591,20 @@ void ThermalSolver::solve_radiosity_system(double env_temp_K) {
 
             // --- 更新 Front J ---
             double H_inc_front = 0.0;
+            double vf_struct_sum_f = 0.0;
             for (const auto& link : node.rad_links_front) {
                 // 对方如果是正面，取 J_front；如果是背面，取 J_back
                 double J_target = link.target_is_front ? nodes[link.target_node_idx].J_front
                     : nodes[link.target_node_idx].J_back;
                 H_inc_front += link.view_factor * J_target;
+                vf_struct_sum_f += link.view_factor;
             }
-            H_inc_front += node.vf_sky_front * E_env;
+
+            double vf_ground_front = 1.0 - node.vf_sky_front - vf_struct_sum_f;
+            if (vf_ground_front < 0.0) vf_ground_front = 0.0;
+
+            H_inc_front += node.vf_sky_front * E_sky;       // 来自天空
+            H_inc_front += vf_ground_front * E_ground;      // 来自海面
 
             double J_new_f = E_emit_f[i] + rho * H_inc_front;
             double diff_f = std::abs(J_new_f - node.J_front);
@@ -586,12 +614,19 @@ void ThermalSolver::solve_radiosity_system(double env_temp_K) {
             // --- 更新 Back J ---
             if (node.bc_back.type != CONV_INSULATED) {
                 double H_inc_back = 0.0;
+                double vf_struct_sum_b = 0.0;
                 for (const auto& link : node.rad_links_back) {
                     double J_target = link.target_is_front ? nodes[link.target_node_idx].J_front
                         : nodes[link.target_node_idx].J_back;
                     H_inc_back += link.view_factor * J_target;
+                    vf_struct_sum_b += link.view_factor;
                 }
-                H_inc_back += node.vf_sky_back * E_env;
+
+                double vf_ground_back = 1.0 - node.vf_sky_back - vf_struct_sum_b;
+                if (vf_ground_back < 0.0) vf_ground_back = 0.0;
+
+                H_inc_back += node.vf_sky_back * E_sky;
+                H_inc_back += vf_ground_back * E_ground;
 
                 double J_new_b = E_emit_b[i] + rho * H_inc_back;
                 double diff_b = std::abs(J_new_b - node.J_back);
@@ -622,24 +657,41 @@ void ThermalSolver::solve_radiosity_system(double env_temp_K) {
         double eps = node.ir_emissivity;
         // --- Front Heat Flux ---
         // 必须最后重新计算一次 H_inc，因为对于高发射率物体，J 里不包含 H 的信息
-        double H_final_f = node.vf_sky_front * E_env;
+        double H_final_f = 0.0;
+        double vf_struct_sum_f = 0.0;
         for (const auto& link : node.rad_links_front) {
             double J_target = link.target_is_front ? nodes[link.target_node_idx].J_front
                 : nodes[link.target_node_idx].J_back;
             H_final_f += link.view_factor * J_target;
+            vf_struct_sum_f += link.view_factor;
         }
+
+        double vf_ground_front = 1.0 - node.vf_sky_front - vf_struct_sum_f;
+        if (vf_ground_front < 0.0) vf_ground_front = 0.0;
+
+        H_final_f += node.vf_sky_front * E_sky + vf_ground_front * E_ground;
 
         // Front Q_rad
         // Q = Absorbed - Emitted
         node.Q_rad_front = node.area * (eps * H_final_f - E_emit_f[i]);
 
+        // --- Back Heat Flux ---
         if (node.bc_back.type != CONV_INSULATED) {
-            double H_final_b = node.vf_sky_back * E_env;
+            double H_final_b = 0.0;
+            double vf_struct_sum_b = 0.0;
+
             for (const auto& link : node.rad_links_back) {
                 double J_target = link.target_is_front ? nodes[link.target_node_idx].J_front
                     : nodes[link.target_node_idx].J_back;
                 H_final_b += link.view_factor * J_target;
+                vf_struct_sum_b += link.view_factor;
             }
+
+            double vf_ground_back = 1.0 - node.vf_sky_back - vf_struct_sum_b;
+            if (vf_ground_back < 0.0) vf_ground_back = 0.0;
+
+            // 加上环境部分
+            H_final_b += node.vf_sky_back * E_sky + vf_ground_back * E_ground;
 
             // Back Q_rad
             node.Q_rad_back = node.area * (eps * H_final_b - E_emit_b[i]);
@@ -721,7 +773,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
     // [STEP 0] 求解长波辐射网络 (Radiosity)
     // 这一步计算了包含多重反射和天空辐射的净热流 Q_rad_front/back
     // =============================================================
-        solve_radiosity_system(T_sky_K);
+        solve_radiosity_system(T_sky_K, T_air_K);
         // --- A. 组装线性系统 Ax = b ---
         // 注意：必须在循环内组装，因为 h_rad (辐射线性化系数) 随温度变化
         MatrixBuilder mb(DOFs);

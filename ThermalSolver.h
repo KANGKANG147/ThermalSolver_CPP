@@ -33,7 +33,7 @@ public:
     void calculate_view_factors(int samples);
 
     // 求解辐射度矩阵 (同时处理 Front 和 Back)
-    void solve_radiosity_system(double env_temp_K);
+    void solve_radiosity_system(double sky_temp_K, double ground_temp_K);
 
     // 核心计算步
     void solve_step(double dt, double hour, const Vec3& sun_dir, 

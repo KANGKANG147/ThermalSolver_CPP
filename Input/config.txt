@@ -6,7 +6,8 @@ WEATHER_FILE Input/weather.txt
 # 仿真开始：1984年7月19日 6:00 
 SIM_START 1984 7 19 6.0
 # 仿真结束：1984年7月19日 22:00 
-SIM_END   1984 7 19 16.0
+SIM_END   1984 7 19 23.0
+# 步长（s）
 DT        1200.0
 
 # 世界坐标设置
@@ -37,7 +38,7 @@ END_GROUP
 
 # ==========================================
 # Group 2: 船体外壳 (水下部分)
-# 外面是海水(h=500, T=15)，里面是机舱
+# 外面是海水(h=50, T=15)，里面是机舱
 # ==========================================
 BEGIN_GROUP
   NAME Hull-Underwater
@@ -135,7 +136,7 @@ BEGIN_GROUP
   NAME Navigation Center Windows
   TYPE CALCULATED
   MAT Glass
-  THICK 0.005
+  THICK 0.0052
   INIT_TEMP 20.0
   BC_FRONT WIND 5.7 3.8
   BC_BACK  FIXED 5.0 25.0

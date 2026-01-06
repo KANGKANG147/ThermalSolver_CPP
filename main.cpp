@@ -99,7 +99,7 @@ int main() {
     // 6. 瞬态模拟循环
     std::cout << "\n[2/3] Simulating Transient..." << std::endl;
 
-    std::ofstream out_csv("results.csv");
+    std::ofstream out_csv("Output/results.csv");
     out_csv << "AbsTime(h),Date,Hour,Temp_Front,Temp_Back,Solar_W_m2\n";
 
     // 计算总步数 (基于秒数差)
@@ -131,7 +131,7 @@ int main() {
                 << w_init.solar << ","
                 << (90.0 - start_sun.zenith) << "\n";
         }
-        std::string vtk_name = "sim_" + std::to_string(frame_count++) + ".vtk";
+        std::string vtk_name = "Output/sim_" + std::to_string(frame_count++) + ".vtk";
         config.export_vtk(vtk_name, init_weather_query, solver.nodes);
 
         std::cout << "Output Initial State (Frame 0)" << std::endl;
