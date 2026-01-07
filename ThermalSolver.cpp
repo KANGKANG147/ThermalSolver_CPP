@@ -773,7 +773,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
     // [STEP 0] 求解长波辐射网络 (Radiosity)
     // 这一步计算了包含多重反射和天空辐射的净热流 Q_rad_front/back
     // =============================================================
-        solve_radiosity_system(T_sky_K, T_air_K);
+        solve_radiosity_system(T_sky_K, sea_temp_K);
         // --- A. 组装线性系统 Ax = b ---
         // 注意：必须在循环内组装，因为 h_rad (辐射线性化系数) 随温度变化
         MatrixBuilder mb(DOFs);

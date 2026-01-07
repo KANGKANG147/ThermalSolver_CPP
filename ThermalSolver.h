@@ -16,6 +16,15 @@ public:
 
     EigenSolverAdapter eigen_solver; // 求解器实例
 
+    // 海水/地面温度 (Kelvin)
+    // 初始化为 288.15K (15C)
+    double sea_temp_K = 288.15;
+
+    // 设置海水温度的接口
+    void set_sea_temperature(double temp_C) {
+        sea_temp_K = temp_C + 273.15;
+    }
+
     // 场景特征尺度 (用于计算自适应 Bias)
     // 初始化为 0.0，表示还没计算过
     double scene_scale = 0.0;

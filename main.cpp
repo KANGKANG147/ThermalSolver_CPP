@@ -35,6 +35,9 @@ int main() {
         return -1;
     }
 
+    // 将配置中的海水温度应用到求解器
+    solver.set_sea_temperature(config.settings.water_temp);
+
     // 3. 建立物理拓扑
     solver.build_topology();
 

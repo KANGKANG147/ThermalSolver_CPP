@@ -18,6 +18,9 @@ struct GlobalSettings {
     double time_zone = 8.0;     // UTC+8
     double north_angle = 0.0;   // 模型Y轴就是正北
 
+    //  海水温度 (摄氏度)
+    double water_temp = 15.0;
+
     // [新增] 模拟日期
     int year = 2024;
     int month = 7;

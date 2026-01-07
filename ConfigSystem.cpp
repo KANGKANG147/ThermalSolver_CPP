@@ -97,6 +97,10 @@ bool ConfigSystem::load_config(const std::string& filename) {
         else if (key == "MODEL_HEADING") {
             ss >> this->settings.north_angle;
         }
+        // 解析海水温度
+        else if (key == "WATER_TEMP") {
+            ss >> this->settings.water_temp;
+        }
 
         else if (inside_group) {
             if (key == "NAME") {
