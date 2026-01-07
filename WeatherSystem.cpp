@@ -71,6 +71,7 @@ bool WeatherSystem::load_weather(const std::string& filename) {
         double airt = all_numbers[i + 1];
         double solar = all_numbers[i + 2];
         double wind = all_numbers[i + 3];
+        double humid = all_numbers[i + 4];
         double cloud = all_numbers[i + 5];
         double lwir = all_numbers[i + 6];
         // ¸ñÊ½½âÎö HHMM -> Hour
@@ -90,7 +91,7 @@ bool WeatherSystem::load_weather(const std::string& filename) {
 
         double final_hour = hh + mm / 60.0 + day_offset;
 
-        data_points.push_back({ final_hour, airt, solar, wind, cloud, lwir });
+        data_points.push_back({ final_hour, airt, solar, wind, humid, cloud, lwir });
     }
 
     std::cout << "[Weather] Successfully parsed " << data_points.size() << " time steps." << std::endl;
@@ -121,6 +122,7 @@ WeatherData WeatherSystem::get_weather(double query_hour) {
             res.air_temp = p1.air_temp + ratio * (p2.air_temp - p1.air_temp);
             res.solar = p1.solar + ratio * (p2.solar - p1.solar);
             res.wind = p1.wind + ratio * (p2.wind - p1.wind);
+            res.humid = p1.humid + ratio * (p2.humid - p1.humid);
             res.cloud = p1.cloud + ratio * (p2.cloud - p1.cloud);
             res.lwir = p1.lwir + ratio * (p2.lwir - p1.lwir);
             return res;

@@ -738,14 +738,17 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
         T_sky_K = std::pow(w.lwir / SIGMA, 0.25);
 	}
     else {
-        // 使用 Swinbank 模型 + Berdahl & Martin 云量修正
-        // A. 晴空发射率 (Swinbank: 0.0000092 * T^2 约等于 0.7~0.8)
-        double eps_clear = 0.0000092 * T_air_K * T_air_K;
+        // 1. 计算露点温度 (近似法，适用于高湿环境)
+        // 注意：确保 w.humidity 是 0-100 的百分比值
+        double T_dew_C = w.air_temp - (100.0 - w.humid) / 5.0;
 
-        // B. 云量修正 (Cloud 0-10 -> 0.0-1.0)
+        // 2. 计算晴空发射率 (Berdahl & Martin 模型)
+        // 该模型利用露点温度来体现湿度的保温效应
+        double T_dew_K = T_dew_C + 273.15;
+        double eps_clear = 0.711 + 0.56 * (T_dew_C / 100.0) + 0.73 * std::pow(T_dew_C / 100.0, 2.0);
+
+        // 3. 云量修正 (Cloud 0-10 -> 0.0-1.0)
         double cloud_ratio = w.cloud / 10.0;
-        if (cloud_ratio < 0.0) cloud_ratio = 0.0;
-        if (cloud_ratio > 1.0) cloud_ratio = 1.0;
 
         // eps_sky = eps_clear + (1 - eps_clear) * C (线性近似)
         double eps_sky = eps_clear + (1.0 - eps_clear) * cloud_ratio;
