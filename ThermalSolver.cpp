@@ -194,15 +194,14 @@ void ThermalSolver::build_topology() {
         double k2 = node2.k_mat;
         double k_interface = 0.0;
 
-        if (k1 < EPSILON || k2 < EPSILON) {
-            k_interface = 0.0; // 只要有一方不导热，整体就不导热
-        }
-        else {
-            // 调和平均公式： 2*k1*k2 / (k1+k2)
-            k_interface = (2.0 * k1 * k2) / (k1 + k2);
-        }
+        // d1, d2 是各自质心到公共边的距离
+        // k1, k2 是各自的导热率
+        double R1 = d1 / (node1.k_mat * A_contact);
+        double R2 = d2 / (node2.k_mat * A_contact);
 
-        double conductance = (k_interface * A_contact) / dist_effective;
+        // 防止除以零（如果有超导体或距离极小）
+        double total_resistance = R1 + R2;
+        double conductance = (total_resistance < 1e-9) ? 0.0 : (1.0 / total_resistance);
 
         node1.neighbors.push_back({ n2, conductance });
         node2.neighbors.push_back({ n1, conductance });

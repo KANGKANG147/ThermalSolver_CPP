@@ -20,6 +20,8 @@ GEO_LOCATION    47.2 -88.5 -4.0
 # 90  = Y轴指东 (车头朝东)
 # 180 = Y轴指南
 # Taitherm里＋270° or -90°
+# MODEL_HEADING 0.0 时，+Y轴是正北，+X轴是正东
+# MODEL_HEADING 270.0 时，+Y轴是正西，+X轴是正北
 MODEL_HEADING   270.0
 
 #海水温度
