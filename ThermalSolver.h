@@ -6,6 +6,7 @@
 #include "LinearAlgebra.h"
 #include "EigenSolverAdapter.h"
 #include "SolarRadiation.h"
+#include "ConfigSystem.h"
 #include <fstream>
 #include <filesystem>
 
@@ -16,13 +17,22 @@ public:
 
     EigenSolverAdapter eigen_solver; // 求解器实例
 
-    // 海水/地面温度 (Kelvin)
-    // 初始化为 288.15K (15C)
-    double sea_temp_K = 288.15;
+    // --- 背景环境参数 ---
+    bool enable_background = true;      // 开关
+    BackgroundType bg_type = BG_SEA;    // 类型
+    double sea_temp_K = 288.15;         // 海水温度初始化为 288.15K (15C)
+    double ground_temp_K = 293.15;      // 地面温度
+    double sea_albedo = 0.1;            // 海面反照率
+    double ground_albedo = 0.2;         // 地面反照率
 
-    // 设置海水温度的接口
-    void set_sea_temperature(double temp_C) {
-        sea_temp_K = temp_C + 273.15;
+    // 设置背景参数的接口
+    void set_background_params(bool enable, int type, double water_C, double ground_C, double s_albedo, double g_albedo) {
+        enable_background = enable;
+        bg_type = (BackgroundType)type;
+        sea_temp_K = water_C + 273.15;
+        ground_temp_K = ground_C + 273.15;
+        sea_albedo = s_albedo;
+        ground_albedo = g_albedo;
     }
 
     // 场景特征尺度 (用于计算自适应 Bias)
@@ -42,7 +52,7 @@ public:
     void calculate_view_factors(int samples);
 
     // 求解辐射度矩阵 (同时处理 Front 和 Back)
-    void solve_radiosity_system(double sky_temp_K, double ground_temp_K);
+    void solve_radiosity_system(double sky_temp_K);
 
     // 核心计算步
     void solve_step(double dt, double hour, const Vec3& sun_dir, 

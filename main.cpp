@@ -36,7 +36,14 @@ int main() {
     }
 
     // 将配置中的海水温度应用到求解器
-    solver.set_sea_temperature(config.settings.water_temp);
+    solver.set_background_params(
+        config.settings.enable_background,
+        (int)config.settings.background_type,
+        config.settings.water_temp,
+        config.settings.ground_temp,
+        config.settings.sea_albedo,
+        config.settings.ground_albedo
+    );
 
     // 3. 建立物理拓扑
     solver.build_topology();
@@ -110,7 +117,7 @@ int main() {
     int steps = (int)(total_seconds / config.settings.dt);
 
     // 如果 start > end，steps 会是负数，提示错误
-    if (steps <= 0) {
+    if (steps < 0) {
         std::cerr << "Error: Start time is later than End time!" << std::endl;
         return -1;
     }

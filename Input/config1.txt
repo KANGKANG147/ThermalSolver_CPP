@@ -1,0 +1,290 @@
+# ==========================================
+# 全局仿真参数配置
+# ==========================================
+OBJ_FILE Input/chuan.tai
+WEATHER_FILE Input/weather.txt
+# 仿真开始：1984年7月19日 6:00 
+SIM_START 1984 7 19 12.0
+# 仿真结束：1984年7月19日 22:00 
+SIM_END   1984 7 19 12.0
+# 步长（s）
+DT        1200.0
+
+# 世界坐标设置
+# 北京 (北纬39.9, 东经116.4, UTC+8)
+# Taitherm里后两项取反
+GEO_LOCATION    47.2 -88.5 -4.0
+
+# 模型朝向: 
+# 0   = Y轴指北
+# 90  = Y轴指东 (车头朝东)
+# 180 = Y轴指南
+# Taitherm里＋270° or -90°
+# MODEL_HEADING 0.0 时，+Y轴是正北，+X轴是正东
+# MODEL_HEADING 270.0 时，+Y轴是正西，+X轴是正北
+MODEL_HEADING   270.0
+
+# --- 背景环境设置 ---
+ENABLE_BACKGROUND  ON	# 开关：ON / OFF
+BACKGROUND_TYPE    SEA      # 类型：SEA (海面) 或 GROUND (地面)
+
+WATER_TEMP         15.0     # 海水温度 (C)
+SEA_ALBEDO         0.1      # 海面反照率
+
+GROUND_TEMP        25.0     # 地面温度 (C)
+GROUND_ALBEDO      0.2      # 地面反照率
+
+# ==========================================
+# Group 1: 船体外壳 (水上部分)
+# 外面吹风，里面是机舱
+# ==========================================
+BEGIN_GROUP
+  NAME Hull
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.010
+  INIT_TEMP 20.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  FIXED 5.0 20.0
+END_GROUP
+
+# ==========================================
+# Group 2: 船体外壳 (水下部分)
+# 外面是海水(h=50, T=15)，里面是机舱
+# ==========================================
+BEGIN_GROUP
+  NAME Hull-Underwater
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.010
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 50.0 15.0
+  BC_BACK  FIXED 5.0 20.0
+END_GROUP
+
+# ==========================================
+# Group 3: 主甲板
+# ==========================================
+BEGIN_GROUP
+  NAME Main Deck
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.010
+  INIT_TEMP 20.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  FIXED 5.0 20.0
+END_GROUP
+
+# ==========================================
+# Group 4: 上层甲板
+# ==========================================
+BEGIN_GROUP
+  NAME Upper Deck
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  FIXED 5.0 25.0
+END_GROUP
+
+# ==========================================
+# Group 5: 后部舱室
+# ==========================================
+BEGIN_GROUP
+  NAME Aft Cabin
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  FIXED 5.0 25.0
+END_GROUP
+
+# ==========================================
+# Group 6: 前部主甲板舱室
+# ==========================================
+BEGIN_GROUP
+  NAME Foreward Main Deck Room
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  FIXED 5.0 25.0
+END_GROUP
+
+# ==========================================
+# Group 7: 前部上层甲板舱室
+# ==========================================
+BEGIN_GROUP
+  NAME Forward Upper Deck Room
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  FIXED 5.0 25.0
+END_GROUP
+
+# ==========================================
+# Group 8: 导航室 (驾驶台)
+# ==========================================
+BEGIN_GROUP
+  NAME Navigation Room
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  FIXED 5.0 25.0
+END_GROUP
+
+# ==========================================
+# Group 9: 导航室窗户 (玻璃)
+# 薄壁，透光(代码里暂按吸收率处理)
+# ==========================================
+BEGIN_GROUP
+  NAME Navigation Center Windows
+  TYPE CALCULATED
+  MAT Glass
+  THICK 0.0052
+  INIT_TEMP 20.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  FIXED 5.0 25.0
+END_GROUP
+
+# ==========================================
+# Group 10: 引擎 (恒温热源)
+# 设定为 88度 恒定
+# ==========================================
+BEGIN_GROUP
+  NAME Engine
+  TYPE ASSIGNED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 88.0
+  # 设置体积热源强度为 100,000 W/m^3
+  HEAT_GEN_VOL 100000.0
+  BC_FRONT FIXED 10.0 0.0
+  BC_BACK  INSULATED
+END_GROUP
+
+# ==========================================
+# Group 11: 引擎室地板/墙壁 (内部部件)
+# 假设两面都是机舱空气
+# ==========================================
+BEGIN_GROUP
+  NAME Engine Room
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 10.0 20.0
+  BC_BACK  FIXED 10.0 20.0
+END_GROUP
+
+# ==========================================
+# Group 12: 高烟囱 (高温源)
+# ==========================================
+BEGIN_GROUP
+  NAME Tall Stack
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  INSULATED
+END_GROUP
+
+# ==========================================
+# Group 13: 矮烟囱 (高温源)
+# ==========================================
+BEGIN_GROUP
+  NAME Short Stack
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  INSULATED
+END_GROUP
+
+# ==========================================
+# Group 14: 高烟囱排气口
+# ==========================================
+BEGIN_GROUP
+  NAME Tall Stack Exhaust
+  TYPE ASSIGNED
+  MAT Steel
+  THICK 0.0015
+  INIT_TEMP 250.0
+  HEAT_GEN_VOL 10000000.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  INSULATED
+END_GROUP
+
+# ==========================================
+# Group 15: 矮烟囱排气口
+# ==========================================
+BEGIN_GROUP
+  NAME Short Stack Exhaust
+  TYPE ASSIGNED
+  MAT Steel
+  THICK 0.0015
+  INIT_TEMP 200.0
+  BC_FRONT WIND 5.7 3.8
+  BC_BACK  INSULATED
+END_GROUP
+
+# ==========================================
+# Group 16: 内部隔板 (下层)
+# ==========================================
+BEGIN_GROUP
+  NAME Lower Room Separation
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.0015
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 5.0 25.0
+  BC_BACK  FIXED 5.0 20.0
+END_GROUP
+
+# ==========================================
+# Group 17: 内部隔板 (中层)
+# ==========================================
+BEGIN_GROUP
+  NAME Middle Room Separation
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 5.0 25.0
+  BC_BACK  FIXED 5.0 25.0
+END_GROUP
+
+# ==========================================
+# Group 18: 导航室天花板
+# ==========================================
+BEGIN_GROUP
+  NAME Navigation Center Ceiling
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 5.0 25.0
+  BC_BACK  FIXED 5.0 25.0
+END_GROUP
+
+# ==========================================
+# Group 19: 导航室地板
+# ==========================================
+BEGIN_GROUP
+  NAME Navigation Center Floor
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.005
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 5.0 25.0
+  BC_BACK  FIXED 5.0 25.0
+END_GROUP

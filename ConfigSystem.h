@@ -5,6 +5,12 @@
 #include <iostream>
 #include "CoreTypes.h"
 
+// 背景类型枚举
+enum BackgroundType {
+    BG_SEA = 0,
+    BG_GROUND = 1
+};
+
 struct GlobalSettings {
     std::string obj_file = "chuan.tai";
     std::string weather_file = "weather.txt";
@@ -18,8 +24,15 @@ struct GlobalSettings {
     double time_zone = 8.0;     // UTC+8
     double north_angle = 0.0;   // 模型Y轴就是正北
 
-    //  海水温度 (摄氏度)
-    double water_temp = 15.0;
+    // --- 背景控制参数 ---
+    bool enable_background = true;      // 总开关：是否考虑背景
+    BackgroundType background_type = BG_SEA; // 背景类型：海面 或 地面
+
+    double water_temp = 15.0;           // 海水温度 (C)
+    double sea_albedo = 0.1;            // 海面反照率 (0.0 - 1.0)
+
+    double ground_temp = 20.0;          // [新增] 地面温度 (C)
+    double ground_albedo = 0.2;         // [新增] 地面反照率 (0.0 - 1.0)
 
     // [新增] 模拟日期
     int year = 2024;

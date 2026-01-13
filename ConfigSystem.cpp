@@ -4,7 +4,14 @@
 #include <iostream>
 #include <iomanip>
 #include <cmath>
+#include <algorithm>
 
+// 字符串转大写
+std::string to_upper(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), ::toupper);
+    return s;
+
+}
 void ConfigSystem::init_defaults() {
     // 1. 初始化材质库 (这部分通常是固定的，或者也可以从文件读)
     //  材质定义
@@ -65,22 +72,6 @@ bool ConfigSystem::load_config(const std::string& filename) {
             ss >> settings.dt;
         }
 
-        // --- Group 解析 ---
-        else if (key == "BEGIN_GROUP") {
-            inside_group = true;
-            // 重置临时变量为默认值
-            current_prop = { "Steel", 0.01, 20.0, 0.0, TYPE_CALCULATED,
-                             {CONV_WIND, 0,0,10,3}, {CONV_FIXED_H_T, 5,0,0,0} };
-            current_name = "Default";
-        }
-        else if (key == "END_GROUP") {
-            if (inside_group && !current_name.empty()) {
-                this->project_config[current_name] = current_prop;
-                // std::cout << "  Configured Group: " << current_name << std::endl;
-            }
-            inside_group = false;
-        }
-
         // 解析地理位置
         else if (key == "GEO_LOCATION") {
             ss >> this->settings.latitude
@@ -97,9 +88,38 @@ bool ConfigSystem::load_config(const std::string& filename) {
         else if (key == "MODEL_HEADING") {
             ss >> this->settings.north_angle;
         }
-        // 解析海水温度
-        else if (key == "WATER_TEMP") {
-            ss >> this->settings.water_temp;
+
+        // --- 背景参数解析 ---
+        else if (key == "ENABLE_BACKGROUND") {
+            std::string val; ss >> val;
+            val = to_upper(val);
+            settings.enable_background = (val == "ON" || val == "TRUE" || val == "1");
+        }
+        else if (key == "BACKGROUND_TYPE") {
+            std::string val; ss >> val;
+            val = to_upper(val);
+            if (val == "GROUND") settings.background_type = BG_GROUND;
+            else settings.background_type = BG_SEA;
+        }
+        else if (key == "WATER_TEMP") ss >> settings.water_temp;
+        else if (key == "GROUND_TEMP") ss >> settings.ground_temp;
+        else if (key == "SEA_ALBEDO") ss >> settings.sea_albedo;
+        else if (key == "GROUND_ALBEDO") ss >> settings.ground_albedo;
+
+        // --- Group 解析 ---
+        else if (key == "BEGIN_GROUP") {
+            inside_group = true;
+            // 重置临时变量为默认值
+            current_prop = { "Steel", 0.01, 20.0, 0.0, TYPE_CALCULATED,
+                             {CONV_WIND, 0,0,10,3}, {CONV_FIXED_H_T, 5,0,0,0} };
+            current_name = "Default";
+        }
+        else if (key == "END_GROUP") {
+            if (inside_group && !current_name.empty()) {
+                this->project_config[current_name] = current_prop;
+                // std::cout << "  Configured Group: " << current_name << std::endl;
+            }
+            inside_group = false;
         }
 
         else if (inside_group) {
@@ -125,7 +145,6 @@ bool ConfigSystem::load_config(const std::string& filename) {
     return true;
 }
 
-// 注意：我把 init_model 的逻辑移到了这里，并稍微改造了一下参数
 bool ConfigSystem::load_obj_model(const std::string& filename, std::vector<ThermalNode>& out_nodes) {
     std::ifstream file(filename); if (!file.is_open()) return false;
     std::vector<Vec3> temp_verts; std::string line, group = "Default";

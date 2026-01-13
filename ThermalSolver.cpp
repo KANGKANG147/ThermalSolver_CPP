@@ -527,12 +527,22 @@ bool ThermalSolver::load_vf_cache(const std::string& filename, int samples) {
     return true;
 }
 
-void ThermalSolver::solve_radiosity_system(double sky_temp_K, double ground_temp_K) {
+void ThermalSolver::solve_radiosity_system(double sky_temp_K) {
     const double SIGMA = 5.67e-8;
+
+    // 根据配置决定背景温度 (E_ground)
+    double bg_temp_effective = 0.0;
+    if (enable_background) {
+        if (bg_type == BG_SEA) bg_temp_effective = sea_temp_K;
+        else bg_temp_effective = ground_temp_K;
+    }
+    else {
+        bg_temp_effective = 0.0; // 背景关闭 -> 0K
+    }
 
     // 分别计算天空和海面的辐射强度
     double E_sky = SIGMA * std::pow(sky_temp_K, 4.0);
-    double E_ground = SIGMA * std::pow(ground_temp_K, 4.0);
+    double E_ground = SIGMA * std::pow(bg_temp_effective, 4.0);
 
     // 收敛参数
     const double CONVERGENCE_TOL = 1e-6; // 辐射度收敛阈值 (W/m2)
@@ -767,6 +777,16 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
         nodes[i].T_back_next = nodes[i].T_back;
     }
 
+    // --- 准备反照率 ---
+    double current_albedo = 0.0;
+    if (enable_background) {
+        if (bg_type == BG_SEA) current_albedo = sea_albedo;
+        else current_albedo = ground_albedo;
+    }
+    else {
+        current_albedo = 0.0; // 背景关闭 -> 不反光
+    }
+
     // ==========================================
     // 2. 非线性迭代循环 (Outer Loop)
     // ==========================================
@@ -775,7 +795,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
     // [STEP 0] 求解长波辐射网络 (Radiosity)
     // 这一步计算了包含多重反射和天空辐射的净热流 Q_rad_front/back
     // =============================================================
-        solve_radiosity_system(T_sky_K, sea_temp_K);
+        solve_radiosity_system(T_sky_K);
         // --- A. 组装线性系统 Ax = b ---
         // 注意：必须在循环内组装，因为 h_rad (辐射线性化系数) 随温度变化
         MatrixBuilder mb(DOFs);
@@ -784,7 +804,6 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
 
         // 归一化太阳向量，避免重复计算
         Vec3 sun_vec = normalize(sun_dir);
-        double albedo = 0.2; // 地面反射率
 
         for (int i = 0; i < N; ++i) {
             ThermalNode& node = nodes[i];
@@ -882,7 +901,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
                 rhs_B += Q_diff_B;
             }
 
-            // 3. 海面反射光 (Ground Reflected) -> GHI (近似)
+            // 3. 背景反射光 (Ground Reflected) -> GHI (近似)
             // --- 计算 Front 面的海面视角系数 ---
             // 逻辑：VF_sea = 1.0 - VF_sky - VF_structure
             double vf_struct_front = 0.0;
@@ -895,7 +914,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
             if (vf_sea_front < 0.0) vf_sea_front = 0.0;
             if (vf_sea_front > 1.0) vf_sea_front = 1.0;
 
-            double Q_ref_F = sol.GHI * albedo * vf_sea_front * node.area * node.solar_absorp;
+            double Q_ref_F = sol.GHI * current_albedo * vf_sea_front * node.area * node.solar_absorp;
             rhs_F += Q_ref_F;
 
             if (node.bc_back.type != CONV_INSULATED) {
@@ -908,7 +927,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
                 if (vf_sea_back < 0.0) vf_sea_back = 0.0;
                 if (vf_sea_back > 1.0) vf_sea_back = 1.0;
 
-                double Q_ref_B = sol.GHI * albedo * vf_sea_back * node.area * node.solar_absorp;
+                double Q_ref_B = sol.GHI * current_albedo * vf_sea_back * node.area * node.solar_absorp;
                 rhs_B += Q_ref_B;
 
                 node.Q_solar_absorbed = Q_direct + Q_diff_F + Q_ref_F + Q_ref_B;
