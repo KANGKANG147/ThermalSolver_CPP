@@ -49,6 +49,8 @@ public:
     void init_defaults();
     bool load_config(const std::string& filename);
     bool load_obj_model(const std::string& filename, std::vector<ThermalNode>& out_nodes);
+    // 创建配置中定义的流体节点
+    void create_fluid_nodes(std::vector<ThermalNode>& out_nodes);
     void export_vtk(const std::string& filename, double current_time, const std::vector<ThermalNode>& nodes);
     void export_results_tai_format(const std::string& filename, const std::vector<ThermalNode>& nodes);
 private:

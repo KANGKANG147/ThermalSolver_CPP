@@ -1,19 +1,19 @@
 # ==========================================
 # 全局仿真参数配置
 # ==========================================
-OBJ_FILE Input/DDG-红外目标特性仿真模型.tai
+OBJ_FILE Input/DDG179.tai
 WEATHER_FILE Input/weather.txt
 # 仿真开始：1984年7月19日 12:00 
-SIM_START 1984 7 19 12.0
+SIM_START 1984 7 19 16.0
 # 仿真结束：1984年7月19日 12:00 
-SIM_END   1984 7 19 12.0
+SIM_END   1984 7 19 16.0
 # 步长（s）
 DT        1200.0
 
 # 世界坐标设置
 # 北京 (北纬39.9, 东经116.4, UTC+8)
 # Taitherm里后两项取反
-GEO_LOCATION    47.2 -88.5 -4.0
+GEO_LOCATION    30.4 -120.52 -8.0
 
 # 模型朝向: 
 # 0   = Y轴指北
@@ -29,23 +29,35 @@ ENABLE_BACKGROUND  ON	# 开关：ON / OFF
 BACKGROUND_TYPE    SEA      # 类型：SEA (海面) 或 GROUND (地面)
 
 WATER_TEMP         15.0     # 海水温度 (C)
-SEA_ALBEDO         0.1      # 海面反照率
+SEA_ALBEDO         0.1     # 海面反照率
 
 GROUND_TEMP        25.0     # 地面温度 (C)
 GROUND_ALBEDO      0.2      # 地面反照率
+
+# ==========================================
+#  定义流体节点 (中间介质：空气)
+# ==========================================
+BEGIN_GROUP
+    NAME        Part_Air
+    TYPE        FLUID
+    MAT         Air          # 使用内置的 Air 材质 (密度小,热容小)
+    VOL         3000.0         # 关键：设定空气体积 (立方米), 决定了热惯性 m*Cp
+    INIT_TEMP   20.0         # 初始气温
+    # 流体节点通常不需要 BC，因为它被周围表面包裹
+END_GROUP
 
 # ==========================================
 # Group 1: 船体外壳 (水上部分)
 # 外面吹风，里面是机舱
 # ==========================================
 BEGIN_GROUP
-  NAME ddg:ddg:DDG_RT
-  TYPE ASSIGNED
+  NAME Body
+  TYPE CALCULATED
   MAT Steel
   THICK 0.015
-  INIT_TEMP 199.427
-  BC_FRONT WIND 5.7 3.8
-  BC_BACK  INSULATED
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 20.0 0.0
+  BC_BACK  COUPLED Part_Air 20.0
 END_GROUP
 
 # ==========================================
@@ -53,37 +65,37 @@ END_GROUP
 # 外面是海水(h=50, T=15)，里面是机舱
 # ==========================================
 BEGIN_GROUP
-  NAME ddg:DDG_JM
-  TYPE CALCULATED
+  NAME HOT_1
+  TYPE ASSIGNED
   MAT Steel
   THICK 0.015
-  INIT_TEMP 20.0
-  BC_FRONT FIXED 50.0 15.0
-  BC_BACK  FIXED 5.0 20.0
+  INIT_TEMP 300.0
+  BC_FRONT FIXED 20.0 0.0
+  BC_BACK  INSULATED
 END_GROUP
 
 # ==========================================
 # Group 3: 主甲板
 # ==========================================
 BEGIN_GROUP
-  NAME ddg:DDG_RD
-  TYPE CALCULATED
+  NAME HOT_2
+  TYPE ASSIGNED
   MAT Steel
-  THICK 0.010
-  INIT_TEMP 20.0
-  BC_FRONT WIND 5.7 3.8
-  BC_BACK  FIXED 5.0 20.0
+  THICK 0.015
+  INIT_TEMP 300.0
+  BC_FRONT COUPLED Part_Air 20.0
+  BC_BACK  INSULATED
 END_GROUP
 
 # ==========================================
 # Group 4: 上层甲板
 # ==========================================
 BEGIN_GROUP
-  NAME ddg:DDG_ZCT
-  TYPE CALCULATED
+  NAME HOT_3
+  TYPE ASSIGNED
   MAT Steel
-  THICK 0.005
-  INIT_TEMP 20.0
-  BC_FRONT WIND 5.7 3.8
-  BC_BACK  FIXED 5.0 25.0
+  THICK 0.015
+  INIT_TEMP 60.0
+  BC_FRONT FIXED 20.0 0.0
+  BC_BACK  INSULATED
 END_GROUP

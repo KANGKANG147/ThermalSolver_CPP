@@ -45,6 +45,9 @@ public:
     // 构建拓扑连接（顶点焊接、横向导热）
     void build_topology();
 
+    // 解析耦合关系：将 PartName 映射到 node index
+    void resolve_couplings();
+
     // 更新阴影遮挡
     void update_shadows(const Vec3& sun_dir);
 

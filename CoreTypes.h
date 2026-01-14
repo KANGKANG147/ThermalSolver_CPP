@@ -87,11 +87,18 @@ struct Material {
     double emissivity;   // 红外发射率
 };
 
+// 节点类型：表面还是流体
+enum NodeType {
+    NODE_SURFACE,
+    NODE_FLUID
+};
+
 //  对流/边界类型枚举
 enum ConvectionType {
     CONV_WIND,          // 随天气风速变化
     CONV_FIXED_H_T,     // 固定 h 和 T
-    CONV_INSULATED      // ★★★ 新增：绝热 (Q=0) ★★★
+    CONV_INSULATED,      // 绝热 (Q=0) 
+    CONV_COUPLED_NODE   // 耦合到另一个节点 (流体)
 };
 
 struct ConvectionBC {
@@ -100,12 +107,17 @@ struct ConvectionBC {
     double fixed_fluid_T;
     double wind_coeff_A;
     double wind_coeff_B;
+
+    // 耦合信息
+    std::string coupled_part_name; // 配置文件中引用的 Part 名字
+    int coupled_node_idx = -1;     // 解析后的fluid节点索引
 };
 
 //  Group 类型枚举
 enum GroupType {
     TYPE_CALCULATED,    // 计算温度 (正常物理对象)
-    TYPE_ASSIGNED       // ★★★ 新增：指定温度 (恒温源) ★★★
+    TYPE_ASSIGNED,      // 指定温度 (恒温源)
+    TYPE_FLUID         // 流体部件
 };
 
 //  部件属性配置
@@ -114,8 +126,11 @@ struct PartProperty {
     double thickness;
     double initial_temp; // 如果是 Assigned 类型，这个值就是全过程的固定温度
 
-    // 新增：体积热源强度 (W/m^3)
+    // 体积热源强度 (W/m^3)
     double volumetric_heat_gen = 0.0;
+
+    // 流体体积 (仅当 TYPE_FLUID 时有效)
+    double volume = 0.0;
 
     GroupType group_type; // Assigned or Calculated
 
@@ -138,11 +153,18 @@ struct RadLink {
 };
 
 struct ThermalNode {
+    NodeType type = NODE_SURFACE; // 节点类型
+
     double T_front, T_back;
     double T_front_next, T_back_next;
 
     double mass_node, conductance, area;
     double solar_absorp, ir_emissivity;
+
+    // 流体专用属性
+    double volume = 0.0;
+    double fluid_density = 0.0;
+    double fluid_cp = 0.0;
 
     // 新增：该节点的总内部热源功率 (Watts)
     // 注意：求解时 Front 和 Back 各分一半

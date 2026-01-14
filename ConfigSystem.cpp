@@ -26,11 +26,22 @@ void ConfigSystem::init_defaults() {
     mat_lib["Iron"] = { 40.0, 7800.0, 500.0, 0.8, 0.85 };
     mat_lib["Glass"] = { 0.81, 2800.0, 800.0, 0.1, 0.9 };
     mat_lib["Insulation"] = { 0.04, 50.0, 1000.0, 0.05, 0.95 };
+    mat_lib["Air"] = { 0.026, 1.225, 1005.0, 0.0, 0.0 }; 
+    mat_lib["Water"] = { 0.6, 998.0, 4180.0, 0.0, 0.0 }; 
 
     // 设置硬编码默认配置作为保底
     ConvectionBC bc_weather = { CONV_WIND, 0, 0, 10.0, 3.0 };
     ConvectionBC bc_cabin = { CONV_FIXED_H_T, 5.0, 0.0, 0, 0 };
-    project_config["Default"] = { "Steel", 0.01, 20.0, 0.0, TYPE_CALCULATED, bc_weather, bc_cabin };
+
+    // 初始化默认属性
+    PartProperty def_prop;
+    def_prop.material_name = "Steel";
+    def_prop.thickness = 0.01;
+    def_prop.initial_temp = 20.0;
+    def_prop.group_type = TYPE_CALCULATED;
+    def_prop.front_bc = bc_weather;
+    def_prop.back_bc = bc_cabin;
+    project_config["Default"] = def_prop;
 }
 
 bool ConfigSystem::load_config(const std::string& filename) {
@@ -46,6 +57,13 @@ bool ConfigSystem::load_config(const std::string& filename) {
     PartProperty current_prop; // 临时存当前 Group 属性
     std::string current_name = "";
     bool inside_group = false;
+
+    // 重置临时变量
+    auto reset_prop = [&]() {
+        current_prop = project_config["Default"];
+        current_prop.volume = 0.0; // 重置体积
+        };
+    reset_prop();
 
     while (std::getline(file, line)) {
         if (line.empty() || line[0] == '#') continue; // 跳过注释空行
@@ -110,8 +128,7 @@ bool ConfigSystem::load_config(const std::string& filename) {
         else if (key == "BEGIN_GROUP") {
             inside_group = true;
             // 重置临时变量为默认值
-            current_prop = { "Steel", 0.01, 20.0, 0.0, TYPE_CALCULATED,
-                             {CONV_WIND, 0,0,10,3}, {CONV_FIXED_H_T, 5,0,0,0} };
+            reset_prop();
             current_name = "Default";
         }
         else if (key == "END_GROUP") {
@@ -132,10 +149,13 @@ bool ConfigSystem::load_config(const std::string& filename) {
             }
             else if (key == "TYPE") {
                 std::string val; ss >> val;
-                current_prop.group_type = (val == "ASSIGNED") ? TYPE_ASSIGNED : TYPE_CALCULATED;
+                if (val == "ASSIGNED") current_prop.group_type = TYPE_ASSIGNED;
+                else if (val == "FLUID") current_prop.group_type = TYPE_FLUID;
+                else current_prop.group_type = TYPE_CALCULATED;
             }
             else if (key == "MAT") ss >> current_prop.material_name;
             else if (key == "THICK") ss >> current_prop.thickness;
+            else if (key == "VOL") ss >> current_prop.volume;
             else if (key == "INIT_TEMP") ss >> current_prop.initial_temp;
             else if (key == "HEAT_GEN_VOL") ss >> current_prop.volumetric_heat_gen;
             else if (key == "BC_FRONT") current_prop.front_bc = parse_bc(ss);
@@ -145,13 +165,60 @@ bool ConfigSystem::load_config(const std::string& filename) {
     return true;
 }
 
+// 创建流体节点
+void ConfigSystem::create_fluid_nodes(std::vector<ThermalNode>& out_nodes) {
+    std::cout << "[Config] Creating Fluid Nodes from Config..." << std::endl;
+    int count = 0;
+    for (const auto& kv : project_config) {
+        const std::string& name = kv.first;
+        const PartProperty& prop = kv.second;
+
+        if (prop.group_type == TYPE_FLUID) {
+            ThermalNode node;
+            node.type = NODE_FLUID; // 标记为流体
+            node.part_name = name;
+            node.group_type = TYPE_FLUID;
+            node.volume = prop.volume;
+
+            // 材质属性
+            Material mat = mat_lib[prop.material_name];
+            node.fluid_density = mat.rho;
+            node.fluid_cp = mat.Cp;
+            node.mass_node = node.volume * node.fluid_density; // m = rho * V
+
+            // 初始温度
+            node.T_front = node.T_back = prop.initial_temp;
+            node.T_front_next = node.T_back_next = prop.initial_temp;
+
+            // 其他属性置零或默认
+            node.area = 0.0; // 流体节点无面积，不参与辐射投影
+            node.thickness = 0.0;
+            node.conductance = 0.0;
+            node.shadow_factor = 1.0;
+
+            // 处理内部热源
+            node.Q_gen_total = prop.volumetric_heat_gen * node.volume;
+
+            out_nodes.push_back(node);
+            count++;
+            std::cout << "  -> Created Fluid Node: " << name << " (Vol=" << node.volume << " m3)" << std::endl;
+        }
+    }
+    std::cout << "Total Fluid Nodes created: " << count << std::endl;
+}
+
 bool ConfigSystem::load_obj_model(const std::string& filename, std::vector<ThermalNode>& out_nodes) {
-    std::ifstream file(filename); if (!file.is_open()) return false;
-    std::vector<Vec3> temp_verts; std::string line, group = "Default";
+    std::ifstream file(filename); 
+    if (!file.is_open()) return false;
+    std::vector<Vec3> temp_verts; 
+    std::string line, group = "Default";
     std::cout << "Loading model..." << std::endl;
 
     while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue; std::stringstream ss(line); std::string type; ss >> type;
+        if (line.empty() || line[0] == '#') continue; 
+        std::stringstream ss(line); 
+        std::string type; 
+        ss >> type;
         if (type == "v") { double x, y, z; ss >> x >> y >> z; temp_verts.push_back({ x, y, z }); }
         else if (type == "g") { std::string temp; std::getline(ss, temp); size_t first = temp.find_first_not_of(' '); group = (first != std::string::npos) ? temp.substr(first) : "Default"; }
         else if (type == "f") {
@@ -162,9 +229,13 @@ bool ConfigSystem::load_obj_model(const std::string& filename, std::vector<Therm
             if (area < 1e-6) continue;
 
             PartProperty prop = get_part_property(group);
+
+            if (prop.group_type == TYPE_FLUID) continue;
+
             Material mat = this->mat_lib[prop.material_name];
 
             ThermalNode node;
+            node.type = NODE_SURFACE; // 标记为表面
             node.part_name = group;
             node.area = area;
             node.geometry_tris = tris;
@@ -193,7 +264,7 @@ bool ConfigSystem::load_obj_model(const std::string& filename, std::vector<Therm
             out_nodes.push_back(node);
         }
     }
-    std::cout << "Nodes: " << out_nodes.size() << std::endl;
+    std::cout << "Surface Nodes loaded:" << out_nodes.size() << std::endl;
     return true;
 }
 
@@ -205,8 +276,10 @@ void ConfigSystem::export_vtk(const std::string& filename, double current_time, 
     int total_points = 0;
     int total_cells = 0;
     for (const auto& node : nodes) {
-        total_points += node.geometry_tris.size() * 3;
-        total_cells += node.geometry_tris.size();
+		if (node.type == NODE_SURFACE) {
+			total_points += node.geometry_tris.size() * 3;
+			total_cells += node.geometry_tris.size();
+		}
     }
 
     // 2. 写入 VTK 头部信息 (Legacy ASCII Format)
@@ -230,11 +303,13 @@ void ConfigSystem::export_vtk(const std::string& filename, double current_time, 
     file << "POLYGONS " << total_cells << " " << total_cells * 4 << "\n";
     int point_idx = 0;
     for (const auto& node : nodes) {
-        for (size_t i = 0; i < node.geometry_tris.size(); ++i) {
-            // 格式: 3(表示三角形) id0 id1 id2
-            file << "3 " << point_idx << " " << point_idx + 1 << " " << point_idx + 2 << "\n";
-            point_idx += 3;
-        }
+		if (node.type == NODE_SURFACE) {
+			for (size_t i = 0; i < node.geometry_tris.size(); ++i) {
+				// 格式: 3(表示三角形) id0 id1 id2
+				file << "3 " << point_idx << " " << point_idx + 1 << " " << point_idx + 2 << "\n";
+				point_idx += 3;
+			}
+		}
     }
 
     // 5. 写入温度数据 (CELL_DATA) - 这里相当于给每个三角形上色
@@ -243,13 +318,14 @@ void ConfigSystem::export_vtk(const std::string& filename, double current_time, 
     file << "LOOKUP_TABLE default\n";
 
     for (const auto& node : nodes) {
-        for (size_t i = 0; i < node.geometry_tris.size(); ++i) {
-            // 只要是属于这个 Node 的三角形，都由该 Node 的温度决定颜色
-            // 这里输出的是正面温度 (T_front)
-            file << node.T_front << "\n";
+        if (node.type == NODE_SURFACE) {
+            for (size_t i = 0; i < node.geometry_tris.size(); ++i) {
+                // 只要是属于这个 Node 的三角形，都由该 Node 的温度决定颜色
+                // 这里输出的是正面温度 (T_front)
+                file << node.T_front << "\n";
+            }
         }
     }
-
     file.close();
     // std::cout << "Exported: " << filename << std::endl;
 }
@@ -266,25 +342,23 @@ void ConfigSystem::export_results_tai_format(const std::string& filename, const 
 
     std::string current_group = "";
 
-    // 2. 设置高精度输出
-    out << std::fixed << std::setprecision(14);
-
     // 3. 遍历所有节点（面片）输出温度
     for (const auto& node : nodes) {
-        // 3. 检测组名是否发生变化
-        // 如果当前节点的 part_name 与上一个不同，说明进入了新 Group
-        if (node.part_name != current_group) {
-            current_group = node.part_name;
+        if (node.type == NODE_SURFACE) {
+            // 3. 检测组名是否发生变化
+            // 如果当前节点的 part_name 与上一个不同，说明进入了新 Group
+            if (node.part_name != current_group) {
+                current_group = node.part_name;
 
-            // 如果 OBJ 中未定义组名，代码默认为 "Default"，此处可直接输出
-            // 格式示例: g Body 或 g Hull
-            out << "g " << current_group << "\n";
+                // 如果 OBJ 中未定义组名，代码默认为 "Default"，此处可直接输出
+                // 格式示例: g Body 或 g Hull
+                out << "g " << current_group << "\n";
+            }
+
+            // 4. 输出温度值 (格式: f <temp>)
+            out << "f " << node.T_front << "\n";
         }
-
-        // 4. 输出温度值 (格式: f <temp>)
-        out << "f " << node.T_front << "\n";
     }
-
     out.close();
     std::cout << "[Export] Results exported to " << filename << " (tai format)" << std::endl;
 }
@@ -306,6 +380,7 @@ ConvectionBC ConfigSystem::parse_bc(std::stringstream& ss) {
     bc.type = CONV_WIND;
     bc.wind_coeff_A = 5.7; bc.wind_coeff_B = 3.8;
     bc.fixed_h = 5.0; bc.fixed_fluid_T = 0.0;
+    bc.coupled_node_idx = -1;
 
     if (type_str == "WIND") {
         bc.type = CONV_WIND;
@@ -318,6 +393,11 @@ ConvectionBC ConfigSystem::parse_bc(std::stringstream& ss) {
     }
     else if (type_str == "INSULATED") {
         bc.type = CONV_INSULATED;
+    }
+    else if (type_str == "COUPLED") {
+        bc.type = CONV_COUPLED_NODE;
+        // 格式: COUPLED PartName h_coeff
+        ss >> bc.coupled_part_name >> bc.fixed_h;
     }
     return bc;
 }

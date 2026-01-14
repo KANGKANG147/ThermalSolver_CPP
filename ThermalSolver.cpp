@@ -51,8 +51,6 @@ double point_segment_distance_sq(const Vec3& p, const Vec3& v1, const Vec3& v2) 
     return dot(d, d);
 }
 
-// ThermalSolver.cpp
-
 void ThermalSolver::ensure_scene_scale() {
     // 如果已经计算过 (大于0)，直接返回，避免重复计算
     if (scene_scale > 1e-9) return;
@@ -66,6 +64,7 @@ void ThermalSolver::ensure_scene_scale() {
     Vec3 max_b = { -1e30, -1e30, -1e30 };
 
     for (const auto& node : nodes) {
+        if (node.type != NODE_SURFACE) continue;
         if (node.centroid.x < min_b.x) min_b.x = node.centroid.x;
         if (node.centroid.y < min_b.y) min_b.y = node.centroid.y;
         if (node.centroid.z < min_b.z) min_b.z = node.centroid.z;
@@ -86,11 +85,11 @@ void ThermalSolver::ensure_scene_scale() {
 }
 
 void ThermalSolver::build_topology() {
-    std::cout << "[Topology] Building lateral connections (Advanced Quad Support)..." << std::endl;
+    std::cout << "[Topology] Building lateral connections ..." << std::endl;
 
     std::vector<Vec3> unique_verts;
 
-    // 1. 顶点焊接 (保持不变)
+    // 1. 顶点焊接 
     std::map<VertexKey, int> vert_map;
     auto get_vert_id = [&](const Vec3& v) -> int {
         VertexKey key = to_key(v);
@@ -101,7 +100,7 @@ void ThermalSolver::build_topology() {
             return new_id;
         }
         return vert_map[key];
-        };
+    };
 
     // 2. 全局边注册 (Edge Registry)
     // 记录每一条边被哪些 Node 引用过
@@ -109,7 +108,8 @@ void ThermalSolver::build_topology() {
     std::map<EdgeKey, std::vector<int>> edge_registry;
 
     for (int i = 0; i < nodes.size(); ++i) {
-        // ★★★ 修正点1：遍历该 Node 下所有的三角形 ★★★
+        if (nodes[i].type != NODE_SURFACE) continue; // 流体不参与几何拓扑
+        // 遍历该 Node 下所有的三角形
         for (const auto& tri : nodes[i].geometry_tris) {
             int id0 = get_vert_id(tri.v0);
             int id1 = get_vert_id(tri.v1);
@@ -187,13 +187,6 @@ void ThermalSolver::build_topology() {
         double t_avg = (node1.thickness + node2.thickness) / 2.0;
         double A_contact = L_edge_real * t_avg;
 
-        // ★★★ 关键升级：异质材料导热系数 (调和平均) ★★★
-        // 如果 k1=45(钢), k2=0.04(绝热), 结果约为 0.08 (接近绝热), 这才是对的。
-        // 如果用算术平均 (45+0.04)/2 = 22.5, 绝热层就失效了。
-        double k1 = node1.k_mat;
-        double k2 = node2.k_mat;
-        double k_interface = 0.0;
-
         // d1, d2 是各自质心到公共边的距离
         // k1, k2 是各自的导热率
         double R1 = d1 / (node1.k_mat * A_contact);
@@ -214,6 +207,44 @@ void ThermalSolver::build_topology() {
     bvh.build(nodes);
 }
 
+// 解析耦合关系
+void ThermalSolver::resolve_couplings() {
+    std::cout << "[Coupling] Resolving fluid-structure connections..." << std::endl;
+    // 1. 建立名字到索引的映射 (只映射流体节点，或者全部)
+    std::map<std::string, int> name_map;
+    for (int i = 0; i < nodes.size(); ++i) {
+        // 如果有重名，这里会覆盖，建议配置保证唯一性，特别是流体部件
+        name_map[nodes[i].part_name] = i;
+    }
+
+    int resolved_count = 0;
+    for (auto& node : nodes) {
+        // 检查 Front
+        if (node.bc_front.type == CONV_COUPLED_NODE) {
+            std::string target = node.bc_front.coupled_part_name;
+            if (name_map.count(target)) {
+                node.bc_front.coupled_node_idx = name_map[target];
+                resolved_count++;
+            }
+            else {
+                std::cerr << "[Error] Coupled target '" << target << "' not found for node " << node.part_name << std::endl;
+            }
+        }
+        // 检查 Back
+        if (node.bc_back.type == CONV_COUPLED_NODE) {
+            std::string target = node.bc_back.coupled_part_name;
+            if (name_map.count(target)) {
+                node.bc_back.coupled_node_idx = name_map[target];
+                resolved_count++;
+            }
+            else {
+                std::cerr << "[Error] Coupled target '" << target << "' not found for node " << node.part_name << std::endl;
+            }
+        }
+    }
+    std::cout << "[Coupling] Resolved " << resolved_count << " connections." << std::endl;
+}
+
 // ==========================================
 // 2. MCRT 核心实现 把一个 ThermalNode 视为两个独立的辐射源
 // ==========================================
@@ -229,9 +260,6 @@ void ThermalSolver::calculate_view_factors(int samples) {
 
     std::cout << "[MCRT] Calculating View Factors (" << samples << " rays/node)..." << std::endl;
 
-    // 可以在这里打印一下最大线程数
-    std::cout << "Max Threads available: " << omp_get_max_threads() << std::endl;
-
     // 确保场景尺度已计算
     ensure_scene_scale();
     // [优化1] 基于场景尺度的自适应 Bias
@@ -241,6 +269,7 @@ void ThermalSolver::calculate_view_factors(int samples) {
 #pragma omp parallel for 
     for (int i = 0; i < nodes.size(); ++i) {
         ThermalNode& node = nodes[i];
+        if (node.type != NODE_SURFACE) continue;
 
         // 计算节点的【正面】辐射
         // 临时统计 map: key -> pair<目标ID, 目标正反>, value -> 命中次数
@@ -344,6 +373,7 @@ void ThermalSolver::update_shadows(const Vec3& sun_dir) {
     #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < nodes.size(); ++i) {
         ThermalNode& receiver = nodes[i];
+        if (receiver.type != NODE_SURFACE) continue;
         Vec3 face_normal = receiver.normal;
         if (dot(receiver.normal, ray_dir) < 0.0) face_normal = receiver.normal * -1.0;
         Vec3 origin = receiver.centroid + (face_normal * adaptive_bias);
@@ -372,8 +402,7 @@ double ThermalSolver::calc_h_rad(double T_surf_K, double T_env_K, double epsilon
 // 返回 pair: {h_value, T_fluid}
 std::pair<double, double> ThermalSolver::get_convection_params(const ThermalNode& node, bool is_front, const WeatherData& w) {
     const ConvectionBC& bc = is_front ? node.bc_front : node.bc_back;
-    double T_surf = is_front ? node.T_front : node.T_back;
-
+    
     if (bc.type == CONV_INSULATED) return { 0.0, 0.0 };
 
     if (bc.type == CONV_FIXED_H_T) {
@@ -559,6 +588,7 @@ void ThermalSolver::solve_radiosity_system(double sky_temp_K) {
 #pragma omp parallel for schedule(static)
     for (int i = 0; i < nodes.size(); ++i) {
         ThermalNode& node = nodes[i];
+        if (node.type != NODE_SURFACE) continue;
 
         // Front
         double T_f_K = node.T_front_next + 273.15;
@@ -596,6 +626,7 @@ void ThermalSolver::solve_radiosity_system(double sky_temp_K) {
         double max_diff = 0.0; // 记录本轮最大变化
         for (int i = 0; i < nodes.size(); ++i) {
             ThermalNode& node = nodes[i];
+            if (node.type != NODE_SURFACE) continue;
             double rho = 1.0 - node.ir_emissivity;
 
             // --- 更新 Front J ---
@@ -663,6 +694,10 @@ void ThermalSolver::solve_radiosity_system(double sky_temp_K) {
 #pragma omp parallel for schedule(static)
     for (int i = 0; i < nodes.size(); ++i) {
         ThermalNode& node = nodes[i];
+        if (node.type != NODE_SURFACE) {
+            node.Q_rad_front = 0.0; node.Q_rad_back = 0.0;
+            continue;
+        }
         double eps = node.ir_emissivity;
         // --- Front Heat Flux ---
         // 必须最后重新计算一次 H_inc，因为对于高发射率物体，J 里不包含 H 的信息
@@ -720,7 +755,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
     // ==========================================
     // 1. 收敛控制参数 (TAItherm 标准)
     // ==========================================
-    double TOL_RESID = 1e-2;       // 温度容差 (Tolerance)
+    double TOL_RESID = 0.0055555556;       // 温度容差 (Tolerance)
     double TOL_SLOPE = 1e-5;       // 容差斜率 (Tolerance Slope)
     int max_iters = is_steady_init ? 100 : 50; // 初始最大迭代数
     int current_iter = 0;
@@ -765,7 +800,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
         // C. 反推天空温度
         T_sky_K = T_air_K * std::pow(eps_sky, 0.25);
     }
-
+    std::cout << " T_sky_K:" << T_sky_K << std::endl;
     // 2. 太阳辐射分离
     // w.solar 是 GHI, zenith_deg 来自 SPA, day_of_year 来自日期计算
     SolarComponents sol = SolarRadiation::split_GHI_Erbs(w.solar, zenith_deg, day_of_year);
@@ -818,9 +853,65 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
                 // 对角线设为1，右端项设为目标温度 -> T = T_target
                 mb.add(idx_F, idx_F, 1.0); b[idx_F] = node.T_front;
                 mb.add(idx_B, idx_B, 1.0); b[idx_B] = node.T_back;
+
+                // 即使是固定温度节点，也要向流体方程贡献热量
+                // 处理 Front 耦合
+                if (node.bc_front.type == CONV_COUPLED_NODE) {
+                    int f_idx = node.bc_front.coupled_node_idx;
+                    if (f_idx >= 0) {
+                        double hA = node.bc_front.fixed_h * node.area;
+                        int idx_Fluid = 2 * f_idx;
+                        // 向流体方程写入: +hA * T_fluid - hA * T_surf = 0
+                        mb.add(idx_Fluid, idx_Fluid, hA);
+                        mb.add(idx_Fluid, idx_F, -hA);
+                    }
+                }
+                // 处理 Back 耦合
+                if (node.bc_back.type == CONV_COUPLED_NODE) {
+                    int f_idx = node.bc_back.coupled_node_idx;
+                    if (f_idx >= 0) {
+                        double hA = node.bc_back.fixed_h * node.area;
+                        int idx_Fluid = 2 * f_idx;
+                        mb.add(idx_Fluid, idx_Fluid, hA);
+                        mb.add(idx_Fluid, idx_B, -hA);
+                    }
+                }
+
                 continue;
             }
 
+            // ===========================
+            // 处理流体节点 (Lumped Mass)
+            // ===========================
+            if (node.type == NODE_FLUID) {
+                // 流体节点方程: C * dT/dt = Q_in - Q_out
+                // 我们使用 idx_F 作为流体温度的自由度
+                // idx_B 设为 dummy，或者强行等于 idx_F
+                double C = node.mass_node * node.fluid_cp / eff_dt;
+                double diag = C;
+                double rhs = C * node.T_front;
+
+                // 加上内部热源
+                rhs += node.Q_gen_total;
+
+                // 注意：流体节点与其他表面的交换项，是由其他表面的遍历过程写入的？
+                // 否，矩阵是对称处理或者单边遍历处理。
+                // 策略：在遍历 Surface 节点时，同时写入 Surface 行和 Fluid 行的耦合系数
+                // 所以在这里，流体节点只需要处理自身的 C/dt 即可。
+                // 剩下的项会在遍历连接它的 Surface 时加上。
+
+                mb.add(idx_F, idx_F, diag);
+                b[idx_F] = rhs;
+
+                // Dummy equation for Back DOF to avoid singular matrix
+                mb.add(idx_B, idx_B, 1.0);
+                b[idx_B] = node.T_front_next;
+                continue;
+            }
+
+            // ===========================
+            // 处理表面节点 (Surface)
+            // ===========================
             // --- 构建 Front 方程 ---
             // (C/dt + SumG + h_rad) * T_new - Sum(K*T_neigh) = Q_old + Q_src + h_rad*T_old
 
@@ -835,11 +926,35 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
             diag_F += h_rad_f;
             rhs_F += node.Q_rad_front + h_rad_f * node.T_front_next;
 
-            // 对流
-            auto conv_f = get_convection_params(node, true, w);
-            diag_F += conv_f.first * node.area;// hA 加到左边
-            rhs_F += conv_f.first * node.area * conv_f.second;// hA * T_fluid 加到右边
+            // --- Front 对流处理 (支持耦合) ---
+            if (node.bc_front.type == CONV_COUPLED_NODE) {
+                int f_idx = node.bc_front.coupled_node_idx;
+                if (f_idx >= 0 && f_idx < N) {
+                    double h = node.bc_front.fixed_h;
+                    double A = node.area;
+                    double hA = h * A;
 
+                    // 1. Surface 方程 (idx_F): + hA*T_surf - hA*T_fluid = 0
+                    diag_F += hA;
+                    int idx_Fluid = 2 * f_idx; // 流体的主自由度
+                    mb.add(idx_F, idx_Fluid, -hA);
+
+                    // 2. Fluid 方程 (idx_Fluid): + hA*T_fluid - hA*T_surf = 0
+                    // 注意：这里需要向流体那一行写入。由于 OpenMP 并行可能冲突，
+                    // 如果开启 OpenMP，这里需要使用原子操作或临界区。
+                    // 现在的代码是串行组装 (mb.add 内部可能不是线程安全的)
+                    // 所以最外层 loop 没有加 #pragma omp parallel 
+                    // (solve_radiosity 是并行的，但 matrix build 是串行的)
+                    mb.add(idx_Fluid, idx_Fluid, hA);
+                    mb.add(idx_Fluid, idx_F, -hA);
+                }
+			}
+			else {
+                // 对流
+                auto conv_f = get_convection_params(node, true, w);
+                diag_F += conv_f.first * node.area;// hA 加到左边
+                rhs_F += conv_f.first * node.area * conv_f.second;// hA * T_fluid 加到右边
+			}
             // 内部热源
             rhs_F += 0.5 * node.Q_gen_total;
 
@@ -866,10 +981,28 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
             diag_B += K; // 增加自身稳定性
             mb.add(idx_B, idx_F, -K); // 耦合项: -K * T_Front
 
-            // 对流 (Back)
-            auto conv_b = get_convection_params(node, false, w);
-            diag_B += conv_b.first * node.area;
-            rhs_B += conv_b.first * node.area * conv_b.second;
+            // Back 对流
+            if (node.bc_back.type == CONV_COUPLED_NODE) {
+                int f_idx = node.bc_back.coupled_node_idx;
+                if (f_idx >= 0 && f_idx < N) {
+                    double h = node.bc_back.fixed_h;
+                    double A = node.area;
+                    double hA = h * A;
+
+                    diag_B += hA;
+                    int idx_Fluid = 2 * f_idx;
+                    mb.add(idx_B, idx_Fluid, -hA);
+
+                    // 同样写入 Fluid 方程
+                    mb.add(idx_Fluid, idx_Fluid, hA);
+                    mb.add(idx_Fluid, idx_B, -hA);
+                }
+            }
+            else {
+                auto conv_b = get_convection_params(node, false, w);
+                diag_B += conv_b.first * node.area;
+                rhs_B += conv_b.first * node.area * conv_b.second;
+			}
 
             // 内部热源 (Back Share 50%)
             rhs_B += 0.5 * node.Q_gen_total;
@@ -1022,8 +1155,8 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
         max_resid_prev = max_resid_curr;
         current_iter++;
 
-        // 调试打印 (每 10 步看一次)
-        if (is_steady_init && current_iter % 10 == 0) {
+        // 调试打印 (每 10 步看一次) if (is_steady_init && current_iter % 10 == 0)
+        if (is_steady_init) {
             std::cout << " Iter " << current_iter
                 << " Resid: " << max_resid_curr
                 << " Slope: " << slope << std::endl;
