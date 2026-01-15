@@ -29,6 +29,9 @@ int main() {
         return -1;
     }
 
+    // 创建流体节点 (根据 Config 中的 FLUID Part)
+    config.create_fluid_nodes(solver.nodes);
+
     // 3. 加载天气 (文件名来自配置)
     if (!weather.load_weather(config.settings.weather_file)) {
         std::cerr << "Failed to load weather file: " << config.settings.weather_file << std::endl;
@@ -44,6 +47,9 @@ int main() {
         config.settings.sea_albedo,
         config.settings.ground_albedo
     );
+
+    // 解析耦合关系 (把配置里的名字映射为索引)
+    solver.resolve_couplings();
 
     // 3. 建立物理拓扑
     solver.build_topology();
