@@ -358,30 +358,118 @@ void ThermalSolver::calculate_view_factors(int samples) {
 void ThermalSolver::update_shadows(const Vec3& sun_dir) {
     if (nodes.empty()) return;
 
-    // --- 2. 设定自适应 Bias(防自遮挡) ---
-    // 经验值：取场景尺度的万分之一
-    // 例如：100米的大楼 -> Bias = 1cm
-    //       0.1米的手机 -> Bias = 0.01mm
-    // 同时设置一个极小值 (如 1e-6) 防止 Bias 变为 0
     ensure_scene_scale();
-    double adaptive_bias = std::max(1e-6, scene_scale * 1e-4);
+    // Bias 设置：防止自遮挡
+    double adaptive_bias = std::max(1e-4, scene_scale * 5e-4);
 
-    Vec3 ray_dir = normalize(sun_dir); 
+    Vec3 normalized_sun_dir = normalize(sun_dir);
     const double MAX_DIST = 1.0e20; // 太阳视为无限远
-    
-    // 开启 OpenMP 并行计算，BVH 是只读的，所以并行是安全的
-    #pragma omp parallel for schedule(dynamic)
+
+    // 【物理参数】太阳视半径 (弧度)
+    // 视直径约 0.53度 -> 半径 ~0.265度 -> ~0.0046 弧度
+    const double SOLAR_RADIUS_RAD = 0.0046;
+
+    // 【采样配置】
+    // 建议至少 16，因为我们现在同时在"空间"和"角度"两个域上采样
+    const int SAMPLES_PER_NODE = 256;
+
+    // OpenMP 并行
+#pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < nodes.size(); ++i) {
         ThermalNode& receiver = nodes[i];
         if (receiver.type != NODE_SURFACE) continue;
+
+        // 1. 确定防自遮挡的法线方向
         Vec3 face_normal = receiver.normal;
-        if (dot(receiver.normal, ray_dir) < 0.0) face_normal = receiver.normal * -1.0;
-        Vec3 origin = receiver.centroid + (face_normal * adaptive_bias);
-        
-        // --- BVH 加速查询 ---
-        // 参数：起点, 方向, 最大距离, 排除的ID(自己)
-        bool blocked = bvh.intersect_shadow(origin, ray_dir, MAX_DIST, i);
-        receiver.shadow_factor = blocked ? 0.0 : 1.0;
+        if (dot(receiver.normal, normalized_sun_dir) < 0.0) {
+            face_normal = receiver.normal * -1.0;
+        }
+        Vec3 bias_offset = face_normal * adaptive_bias;
+
+        // 2. 准备几何数据 (CDF 构建)
+        bool has_geometry = !receiver.geometry_tris.empty();
+        std::vector<double> tri_cdf;
+        double total_area = 0.0;
+
+        if (has_geometry) {
+            tri_cdf.reserve(receiver.geometry_tris.size());
+            for (const auto& tri : receiver.geometry_tris) {
+                Vec3 ab = tri.v1 - tri.v0;
+                Vec3 ac = tri.v2 - tri.v0;
+                Vec3 cross_prod = cross(ab, ac);
+                // 使用 dot 计算模长，避免 length 函数未定义问题
+                double area = 0.5 * std::sqrt(dot(cross_prod, cross_prod));
+                total_area += area;
+                tri_cdf.push_back(total_area);
+            }
+        }
+
+        // 处理无几何或退化情况
+        if (!has_geometry || total_area < 1e-12) {
+            // 回退到简单的单点+圆锥采样 (仅质心)
+            int visible = 0;
+            for (int s = 1; s <= SAMPLES_PER_NODE; ++s) {
+                // 仅使用维度 7, 11 做角度抖动
+                double u_angle = halton_sequence(s + i, 7);
+                double v_angle = halton_sequence(s + i, 11);
+                Vec3 ray_dir = sample_cone_deterministic(normalized_sun_dir, SOLAR_RADIUS_RAD, u_angle, v_angle);
+
+                Vec3 origin = receiver.centroid + bias_offset;
+                if (!bvh.intersect_shadow(origin, ray_dir, MAX_DIST, i)) visible++;
+            }
+            receiver.shadow_factor = (double)visible / SAMPLES_PER_NODE;
+            continue;
+        }
+
+        // 3. 全局 QMC 积分循环 (空间 + 角度)
+        int visible_samples = 0;
+
+        for (int s = 1; s <= SAMPLES_PER_NODE; ++s) {
+            // 引入节点索引 i 扰动 Halton 序列的起始位置
+            int seed_offset = s + (i * 17); // 简单的扰动
+
+            // --- A. 空间采样 (Spatial Sampling) ---
+            // 使用维度 2: 选择三角形
+            double r_tri = halton_sequence(seed_offset, 2);
+            double target_area = r_tri * total_area;
+
+            // 查找三角形
+            int tri_idx = 0;
+            for (size_t k = 0; k < tri_cdf.size(); ++k) {
+                if (target_area <= tri_cdf[k]) {
+                    tri_idx = (int)k;
+                    break;
+                }
+            }
+            const auto& target_tri = receiver.geometry_tris[tri_idx];
+
+            // 使用维度 3, 5: 三角形内取点 (重心坐标)
+            double u_bary = halton_sequence(seed_offset, 3);
+            double v_bary = halton_sequence(seed_offset, 5);
+
+            double sqrt_u = std::sqrt(u_bary);
+            double b0 = 1.0 - sqrt_u;
+            double b1 = v_bary * sqrt_u;
+            double b2 = 1.0 - b0 - b1;
+
+            Vec3 origin_surf = target_tri.v0 * b0 + target_tri.v1 * b1 + target_tri.v2 * b2;
+            Vec3 origin = origin_surf + bias_offset;
+
+            // --- B. 角度采样 (Angular Sampling) ---
+            // 使用维度 7, 11: 太阳圆锥内取向
+            double u_angle = halton_sequence(seed_offset, 7);
+            double v_angle = halton_sequence(seed_offset, 11);
+
+            Vec3 ray_dir = sample_cone_deterministic(normalized_sun_dir, SOLAR_RADIUS_RAD, u_angle, v_angle);
+
+            // --- C. 发射射线 ---
+            if (!bvh.intersect_shadow(origin, ray_dir, MAX_DIST, i)) {
+                visible_samples++;
+            }
+        }
+
+        // 4. 计算最终因子
+        receiver.shadow_factor = (double)visible_samples / SAMPLES_PER_NODE;
     }
 }
 
