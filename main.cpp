@@ -21,7 +21,7 @@ int main() {
 
     // 2. 加载配置和数据
     config.init_defaults();
-    config.load_config("Input/config.txt"); // 如果找不到，会用代码里的默认值
+    config.load_config("Input/config_test.txt"); // 如果找不到，会用代码里的默认值
 
     // 注意：这里把 config 和 solver 连起来了，加载的模型直接放进 solver.nodes
     if (!config.load_obj_model(config.settings.obj_file, solver.nodes)) {
@@ -109,14 +109,20 @@ int main() {
     }
 
     //稳态初始化
-    solver.solve_step(config.settings.dt, init_weather_query, init_sun_dir, start_sun.zenith, curr_time.get_day_of_year(), weather, true);
+ //   solver.solve_step(config.settings.dt, init_weather_query, init_sun_dir, start_sun.zenith, curr_time.get_day_of_year(), weather, true);
     std::cout << " Done." << std::endl;
 
     // 6. 瞬态模拟循环
     std::cout << "\n[2/3] Simulating Transient..." << std::endl;
 
     std::ofstream out_csv("Output/results.csv");
-    out_csv << "AbsTime(h),Date,Hour,Temp_Front,Temp_Back,Solar_W_m2\n";
+    out_csv << "AbsTime(h),Date,Hour,Solar_W_m2";
+
+    // 遍历所有节点，生成动态列名 (例如: Deck_0, Hull_1, ...)
+    for (size_t i = 0; i < solver.nodes.size(); ++i) {
+        out_csv << "," << solver.nodes[i].part_name << "_" << i;
+    }
+    out_csv << "\n";
 
     // 计算总步数 (基于秒数差)
     double total_seconds = get_duration_seconds(config.settings.start_date_time, config.settings.end_date_time);
@@ -142,11 +148,15 @@ int main() {
                 << init_weather_query << ","
                 << curr_time.year << "/" << curr_time.month << "/" << curr_time.day << ","
                 << curr_time.hour << ","
-                << solver.nodes[0].T_front << ","
-                << solver.nodes[0].T_back << ","
-                << w_init.solar << ","
-                << (90.0 - start_sun.zenith) << "\n";
+                << w_init.solar;
         }
+
+        // 遍历所有节点输出初始温度
+        for (const auto& node : solver.nodes) {
+            out_csv << "," << node.T_front;
+        }
+        out_csv << "\n";
+
         std::string vtk_name = "Output/sim_" + std::to_string(frame_count++) + ".vtk";
         config.export_vtk(vtk_name, init_weather_query, solver.nodes);
 
@@ -203,20 +213,18 @@ int main() {
 
         // 求解一步
         solver.solve_step(config.settings.dt, weather_query_hour, sun_dir, sun.zenith, current_doy, weather, false);
+        out_csv << std::fixed << std::setprecision(2)
+            << weather_query_hour << ","
+            << curr_time.year << "/" << curr_time.month << "/" << curr_time.day << ","
+            << curr_time.hour << ","
+            << w_curr.solar;
+        for (const auto& node : solver.nodes) {
+            out_csv << "," << node.T_front;
+        }
+        out_csv << "\n";
 
         // 输出结果 (每20分钟)
         if (elapsed_sec - last_output_time >= 1200.0 - 0.1) {
-            // CSV 记录第0个节点的温度
-            if (!solver.nodes.empty()) {
-                out_csv << std::fixed << std::setprecision(2)
-                    << weather_query_hour << ","
-                    << curr_time.year << "/" << curr_time.month << "/" << curr_time.day << ","
-                    << curr_time.hour << ","
-                    << solver.nodes[0].T_front << ","
-                    << solver.nodes[0].T_back << ","
-                    << w_curr.solar << "\n";
-            }
-
             // VTK
             std::string vtk_name = "Output/sim_" + std::to_string(frame_count++) + ".vtk";
             config.export_vtk(vtk_name, weather_query_hour, solver.nodes);

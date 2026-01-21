@@ -360,7 +360,7 @@ void ThermalSolver::update_shadows(const Vec3& sun_dir) {
 
     ensure_scene_scale();
     // Bias 设置：防止自遮挡
-    double adaptive_bias = std::max(1e-4, scene_scale * 5e-4);
+    double adaptive_bias = std::max(1e-5, scene_scale * 1e-4);
 
     Vec3 normalized_sun_dir = normalize(sun_dir);
     const double MAX_DIST = 1.0e20; // 太阳视为无限远
@@ -410,8 +410,8 @@ void ThermalSolver::update_shadows(const Vec3& sun_dir) {
             int visible = 0;
             for (int s = 1; s <= SAMPLES_PER_NODE; ++s) {
                 // 仅使用维度 7, 11 做角度抖动
-                double u_angle = halton_sequence(s + i, 7);
-                double v_angle = halton_sequence(s + i, 11);
+                double u_angle = halton_sequence(s, 7);
+                double v_angle = halton_sequence(s, 11);
                 Vec3 ray_dir = sample_cone_deterministic(normalized_sun_dir, SOLAR_RADIUS_RAD, u_angle, v_angle);
 
                 Vec3 origin = receiver.centroid + bias_offset;
@@ -425,12 +425,9 @@ void ThermalSolver::update_shadows(const Vec3& sun_dir) {
         int visible_samples = 0;
 
         for (int s = 1; s <= SAMPLES_PER_NODE; ++s) {
-            // 引入节点索引 i 扰动 Halton 序列的起始位置
-            int seed_offset = s + (i * 17); // 简单的扰动
-
             // --- A. 空间采样 (Spatial Sampling) ---
             // 使用维度 2: 选择三角形
-            double r_tri = halton_sequence(seed_offset, 2);
+            double r_tri = halton_sequence(s, 2);
             double target_area = r_tri * total_area;
 
             // 查找三角形
@@ -444,8 +441,8 @@ void ThermalSolver::update_shadows(const Vec3& sun_dir) {
             const auto& target_tri = receiver.geometry_tris[tri_idx];
 
             // 使用维度 3, 5: 三角形内取点 (重心坐标)
-            double u_bary = halton_sequence(seed_offset, 3);
-            double v_bary = halton_sequence(seed_offset, 5);
+            double u_bary = halton_sequence(s, 3);
+            double v_bary = halton_sequence(s, 5);
 
             double sqrt_u = std::sqrt(u_bary);
             double b0 = 1.0 - sqrt_u;
@@ -457,8 +454,8 @@ void ThermalSolver::update_shadows(const Vec3& sun_dir) {
 
             // --- B. 角度采样 (Angular Sampling) ---
             // 使用维度 7, 11: 太阳圆锥内取向
-            double u_angle = halton_sequence(seed_offset, 7);
-            double v_angle = halton_sequence(seed_offset, 11);
+            double u_angle = halton_sequence(s, 7);
+            double v_angle = halton_sequence(s, 11);
 
             Vec3 ray_dir = sample_cone_deterministic(normalized_sun_dir, SOLAR_RADIUS_RAD, u_angle, v_angle);
 
@@ -833,9 +830,9 @@ void ThermalSolver::solve_radiosity_system(double sky_temp_K) {
     }
 }
 
-void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir, 
-                               double zenith_deg, int day_of_year,
-                               WeatherSystem& weather, bool is_steady_init) {
+void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
+    double zenith_deg, int day_of_year,
+    WeatherSystem& weather, bool is_steady_init) {
     int N = nodes.size();
     int DOFs = 2 * N;
     WeatherData w = weather.get_weather(hour);
@@ -868,7 +865,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
     if (w.lwir > 10.0) {
         // 优先使用实测长波辐射
         T_sky_K = std::pow(w.lwir / SIGMA, 0.25);
-	}
+    }
     else {
         // 1. 计算露点温度 (近似法，适用于高湿环境)
         // 注意：确保 w.humidity 是 0-100 的百分比值
@@ -1022,19 +1019,31 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
                     double A = node.area;
                     double hA = h * A;
 
-                    // 1. Surface 方程 (idx_F): + hA*T_surf - hA*T_fluid = 0
-                    diag_F += hA;
-                    int idx_Fluid = 2 * f_idx; // 流体的主自由度
-                    mb.add(idx_F, idx_Fluid, -hA);
+                    int idx_Fluid = 2 * f_idx;
 
-                    // 2. Fluid 方程 (idx_Fluid): + hA*T_fluid - hA*T_surf = 0
-                    // 注意：这里需要向流体那一行写入。由于 OpenMP 并行可能冲突，
-                    // 如果开启 OpenMP，这里需要使用原子操作或临界区。
-                    // 现在的代码是串行组装 (mb.add 内部可能不是线程安全的)
-                    // 所以最外层 loop 没有加 #pragma omp parallel 
-                    // (solve_radiosity 是并行的，但 matrix build 是串行的)
-                    mb.add(idx_Fluid, idx_Fluid, hA);
-                    mb.add(idx_Fluid, idx_F, -hA);
+                    // 【修改点 2】检查目标流体节点是否为固定温度
+                    if (nodes[f_idx].group_type == TYPE_ASSIGNED) {
+                        // 既然流体恒温，这就退化成了普通的固定环境温度对流
+                        // Surface 方程: (hA) * T_surf = ... + hA * T_fluid_fixed
+                        diag_F += hA;
+                        rhs_F += hA * nodes[f_idx].T_front_next;
+
+                        // 注意：不需要处理流体方程那一行，因为流体节点自己会把自己设为 1.0 * T = T_target
+                    }
+                    else {
+                        // 正常的双向耦合 (双方都不是固定温度)
+                        // 1. Surface 方程
+                        diag_F += hA;
+                        mb.add(idx_F, idx_Fluid, -hA);
+
+                        // 2. Fluid 方程 (写入流体那一行)
+                        // 注意：这里可能有并发冲突风险，建议加锁或改为串行
+                        // 只有当流体本身不是 ASSIGNED 时才写入
+                        if (nodes[f_idx].group_type != TYPE_ASSIGNED) {
+                            mb.add(idx_Fluid, idx_Fluid, hA);
+                            mb.add(idx_Fluid, idx_F, -hA);
+                        }
+                    }
                 }
             }
             else {
@@ -1055,8 +1064,19 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
             // 横向导热 (Front) - 承担 50%
             for (auto& link : node.neighbors) {
                 double k_lat_part = link.conductance * 0.5; // 分摊 50%
-                diag_F += k_lat_part;
-                mb.add(idx_F, 2 * link.neighbor_idx, -k_lat_part);
+                // 检查邻居是否为固定温度节点
+                if (nodes[link.neighbor_idx].group_type == TYPE_ASSIGNED) {
+                    // 【关键修改】不写入矩阵，而是移项到右边
+                    // 原方程: ... - K * T_neigh = ...
+                    // 移项后: ... = ... + K * T_neigh
+                    diag_F += k_lat_part; // 对角线还是要加 K (自身稳定性)
+                    rhs_F += k_lat_part * nodes[link.neighbor_idx].T_front; // 加到 b
+                }
+                else {
+                    // 正常写入矩阵 (邻居也是计算节点)
+                    diag_F += k_lat_part;
+                    mb.add(idx_F, 2 * link.neighbor_idx, -k_lat_part);
+                }
             }
 
             // ---------------------------------------------------------
@@ -1077,14 +1097,22 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
                     double h = node.bc_back.fixed_h;
                     double A = node.area;
                     double hA = h * A;
-
-                    diag_B += hA;
                     int idx_Fluid = 2 * f_idx;
-                    mb.add(idx_B, idx_Fluid, -hA);
 
-                    // 同样写入 Fluid 方程
-                    mb.add(idx_Fluid, idx_Fluid, hA);
-                    mb.add(idx_Fluid, idx_B, -hA);
+                    // 【修改点 3】检查流体是否固定
+                    if (nodes[f_idx].group_type == TYPE_ASSIGNED) {
+                        diag_B += hA;
+                        rhs_B += hA * nodes[f_idx].T_front_next; // 流体通常存在 Front 槽位
+                    }
+                    else {
+                        diag_B += hA;
+                        mb.add(idx_B, idx_Fluid, -hA);
+
+                        if (nodes[f_idx].group_type != TYPE_ASSIGNED) {
+                            mb.add(idx_Fluid, idx_Fluid, hA);
+                            mb.add(idx_Fluid, idx_B, -hA);
+                        }
+                    }
                 }
             }
             else {
@@ -1153,7 +1181,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
                 rhs_B += Q_ref_B;
 
                 node.Q_solar_absorbed = Q_direct + Q_diff_F + Q_ref_F + Q_ref_B;
-			}
+            }
             else {
                 node.Q_solar_absorbed = Q_direct + Q_diff_F + Q_ref_F;
             }
@@ -1175,10 +1203,18 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
             // 允许热量在背面节点之间横向流动
             for (auto& link : node.neighbors) {
                 double k_lat_part = link.conductance * 0.5; // 分摊 50%
-                diag_B += k_lat_part;
-
-                // 注意：邻居的 Back 节点索引是 [2 * neighbor_idx + 1]
-                mb.add(idx_B, 2 * link.neighbor_idx + 1, -k_lat_part);
+                // 【修改点 1】检查邻居是否为固定温度
+                if (nodes[link.neighbor_idx].group_type == TYPE_ASSIGNED) {
+                    // 移项到 RHS: ... = ... + K * T_neigh_back
+                    // 注意邻居的 Back 温度是 T_back_next (或者 T_back，视你的时间离散格式而定，这里用 next 保持一致)
+                    diag_B += k_lat_part;
+                    rhs_B += k_lat_part * nodes[link.neighbor_idx].T_back_next;
+                }
+                else {
+                    // 正常写入矩阵
+                    diag_B += k_lat_part;
+                    mb.add(idx_B, 2 * link.neighbor_idx + 1, -k_lat_part);
+                }
             }
 
             // 写入 Front 矩阵行

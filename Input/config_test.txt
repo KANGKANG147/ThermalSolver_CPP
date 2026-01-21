@@ -1,0 +1,24 @@
+OBJ_FILE      Input/test.obj
+WEATHER_FILE  Input/weather_test.txt
+
+# 仿真时间：跑 600 秒
+SIM_START     2024 1 1 0
+SIM_END       2024 1 1 1
+DT            1.0
+
+# ★关键★：关闭背景辐射，确保环境是纯黑的真空
+ENABLE_BACKGROUND FALSE
+
+BEGIN_GROUP
+  NAME       TestGroup
+  MAT        TestMat
+  THICK      1.0
+  
+  # ★关键★：初始温度设为 726.85 C (= 1000 K)
+  # 温度太低辐射会很弱，算出来全是直线，看不出效果
+  INIT_TEMP  726.85
+  
+  # ★关键★：绝热 (INSULATED)，彻底关闭对流
+  BC_FRONT   INSULATED
+  BC_BACK    INSULATED
+END_GROUP

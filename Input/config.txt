@@ -4,11 +4,11 @@
 OBJ_FILE Input/DDG179.tai
 WEATHER_FILE Input/weather.txt
 # 仿真开始：1984年7月19日 12:00 
-SIM_START 1984 7 19 12.0
+SIM_START 1984 7 19 21.0
 # 仿真结束：1984年7月19日 12:00 
-SIM_END   1984 7 19 16.0
+SIM_END   1984 7 19 21.0
 # 步长（s）
-DT        1200.0
+DT        600.0
 
 # 世界坐标设置
 # 北京 (北纬39.9, 东经116.4, UTC+8)
@@ -41,7 +41,7 @@ BEGIN_GROUP
     NAME        Part_Air
     TYPE        FLUID
     MAT         Air          # 使用内置的 Air 材质 (密度小,热容小)
-    VOL         3000.0         # 关键：设定空气体积 (立方米), 决定了热惯性 m*Cp
+    VOL         300.0         # 关键：设定空气体积 (立方米), 决定了热惯性 m*Cp
     INIT_TEMP   20.0         # 初始气温
     # 流体节点通常不需要 BC，因为它被周围表面包裹
 END_GROUP
