@@ -1,3 +1,3 @@
-TIME   AIRT     SOLAR  WIND  HUMID  CLOUD  LWIR
-0100   -273.15  0.0    0.0   0.0    0.0    0.0
-2400   -273.15  0.0    0.0   0.0    0.0    0.0
+TIME   AIRT  SOLAR  WIND  HUMID  CLOUD  LWIR
+0100   20.0   0.0   0.0   0.0    0.0    0.0
+2400   20.0   0.0   0.0   0.0    0.0    0.0

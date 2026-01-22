@@ -1,24 +1,23 @@
 OBJ_FILE      Input/test.obj
-WEATHER_FILE  Input/weather_test.txt
+WEATHER_FILE  Input/weather_test.txt  
+# 注意：确认 weather_test.txt 里的气温是 20.0，太阳是 0
 
-# 仿真时间：跑 600 秒
+# 仿真时间：跑 10000 秒 (因为 78kg 的铁凉得很慢)
 SIM_START     2024 1 1 0
-SIM_END       2024 1 1 1
+SIM_END       2024 1 1 3 
 DT            1.0
 
-# ★关键★：关闭背景辐射，确保环境是纯黑的真空
 ENABLE_BACKGROUND FALSE
 
 BEGIN_GROUP
   NAME       TestGroup
-  MAT        TestMat
-  THICK      1.0
+  MAT        Iron      # 使用刚才修改过(无辐射)的铁
+  THICK      0.01      # 1cm 厚度
+  INIT_TEMP  100.0     # 初始 100度
   
-  # ★关键★：初始温度设为 726.85 C (= 1000 K)
-  # 温度太低辐射会很弱，算出来全是直线，看不出效果
-  INIT_TEMP  726.85
+  # 正面: 强对流散热 (h=10, T=20)
+  BC_FRONT   FIXED 10.0 20.0
   
-  # ★关键★：绝热 (INSULATED)，彻底关闭对流
-  BC_FRONT   INSULATED
+  # 背面: 绝热 (保证单面散热，符合公式)
   BC_BACK    INSULATED
 END_GROUP

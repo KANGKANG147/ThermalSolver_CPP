@@ -21,7 +21,7 @@ int main() {
 
     // 2. 加载配置和数据
     config.init_defaults();
-    config.load_config("Input/config_test.txt"); // 如果找不到，会用代码里的默认值
+    config.load_config("Input/config.txt"); // 如果找不到，会用代码里的默认值
 
     // 注意：这里把 config 和 solver 连起来了，加载的模型直接放进 solver.nodes
     if (!config.load_obj_model(config.settings.obj_file, solver.nodes)) {
@@ -109,7 +109,7 @@ int main() {
     }
 
     //稳态初始化
- //   solver.solve_step(config.settings.dt, init_weather_query, init_sun_dir, start_sun.zenith, curr_time.get_day_of_year(), weather, true);
+    solver.solve_step(config.settings.dt, init_weather_query, init_sun_dir, start_sun.zenith, curr_time.get_day_of_year(), weather, true);
     std::cout << " Done." << std::endl;
 
     // 6. 瞬态模拟循环

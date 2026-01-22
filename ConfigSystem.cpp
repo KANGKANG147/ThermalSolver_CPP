@@ -28,7 +28,7 @@ void ConfigSystem::init_defaults() {
     mat_lib["Insulation"] = { 0.04, 50.0, 1000.0, 0.05, 0.95 };
     mat_lib["Air"] = { 0.026, 1.225, 1005.0, 0.0, 0.0 };
     mat_lib["Water"] = { 0.6, 998.0, 4180.0, 0.0, 0.0 };
-    mat_lib["TestMat"] = { 50.0, 10.0, 100.0, 0.0, 1.0 };
+    mat_lib["TestMat"] = { 50.0, 1000.0, 100.0, 0.0, 1.0 };
 
     // 设置硬编码默认配置作为保底
     ConvectionBC bc_weather = { CONV_WIND, 0, 0, 10.0, 3.0 };

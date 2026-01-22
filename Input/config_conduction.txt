@@ -1,0 +1,31 @@
+OBJ_FILE      Input/test_conduction.obj
+WEATHER_FILE  Input/weather_test.txt
+# 确保 weather_test.txt 存在 (内容无所谓，反正绝热)
+
+# 仿真时间：跑 100,000 秒 (约 27 小时)
+# 传导很慢，需要足够时间才能看到平衡
+SIM_START     2024 1 1 0
+SIM_END       2024 1 2 4 
+DT            10.0      # 时间步长设大一点 (10秒)，算得快
+
+ENABLE_BACKGROUND FALSE
+
+# 左边的板子：100度
+BEGIN_GROUP
+  NAME       HotPart
+  MAT        Iron      # 确保 ConfigSystem.cpp 里有 Iron
+  THICK      0.01      # 1cm 厚
+  INIT_TEMP  100.0
+  BC_FRONT   INSULATED # 必须绝热，只测传导
+  BC_BACK    INSULATED
+END_GROUP
+
+# 右边的板子：0度
+BEGIN_GROUP
+  NAME       ColdPart
+  MAT        Iron
+  THICK      0.01
+  INIT_TEMP  0.0
+  BC_FRONT   INSULATED
+  BC_BACK    INSULATED
+END_GROUP
