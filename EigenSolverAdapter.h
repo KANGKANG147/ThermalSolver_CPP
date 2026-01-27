@@ -21,10 +21,10 @@ public:
     // =================================================================================
 
     // 方案 A (推荐): 针对对称正定矩阵 (速度最快)
-    using SolverType = Eigen::ConjugateGradient<Eigen::SparseMatrix<double, Eigen::RowMajor>, Eigen::Lower | Eigen::Upper, Eigen::IncompleteCholesky<double>>;
+    //using SolverType = Eigen::ConjugateGradient<Eigen::SparseMatrix<double, Eigen::RowMajor>, Eigen::Lower | Eigen::Upper, Eigen::IncompleteCholesky<double>>;
 
     // 方案 B (备用): 针对非对称矩阵 (稳定双共轭梯度法 (BiCGSTAB) + IncompleteLUT 预处理,如果以后引入了流体平流项导致不对称，可切回这个)
-    // using SolverType = Eigen::BiCGSTAB<Eigen::SparseMatrix<double, Eigen::RowMajor>, Eigen::IncompleteLUT<double>>;
+    using SolverType = Eigen::BiCGSTAB<Eigen::SparseMatrix<double, Eigen::RowMajor>, Eigen::IncompleteLUT<double>>;
 
     SolverType solver;
 

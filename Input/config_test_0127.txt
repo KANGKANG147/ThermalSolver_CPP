@@ -1,0 +1,52 @@
+OBJ_FILE      Input/yancong_test4.tai
+WEATHER_FILE  Input/w041984_48hr.txt
+
+# 仿真时间：跑 10000 秒 (因为 78kg 的铁凉得很慢)
+SIM_START     1984 4 20 12.0
+SIM_END       1984 4 20 12.0
+DT            1.0
+
+GEO_LOCATION    30.4 -120.52 -8.0
+
+MODEL_HEADING   270.0
+
+ENABLE_BACKGROUND ON	
+BACKGROUND_TYPE    SEA      # 类型：SEA (海面) 或 GROUND (地面)
+
+WATER_TEMP         15.0     # 海水温度 (C)
+SEA_ALBEDO         0.1      # 海面反照率
+
+GROUND_TEMP        25.0     # 地面温度 (C)
+GROUND_ALBEDO      0.2      # 地面反照率
+
+# ==========================================
+#  定义流体节点 (中间介质：空气)
+# ==========================================
+BEGIN_GROUP
+    NAME        Part_Air
+    TYPE        FLUID
+    MAT         Air          # 使用内置的 Air 材质 (密度小,热容小)
+    VOL         500.0         # 关键：设定空气体积 (立方米), 决定了热惯性 m*Cp
+    INIT_TEMP   20.0         # 初始气温
+    # 流体节点通常不需要 BC，因为它被周围表面包裹
+END_GROUP
+
+BEGIN_GROUP
+  NAME Body
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.0015
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 20.0 0.0
+  BC_BACK  COUPLED Part_Air 20.0
+END_GROUP
+
+BEGIN_GROUP
+  NAME HOT_2
+  TYPE ASSIGNED
+  MAT Steel
+  THICK 0.0015
+  INIT_TEMP 500.0
+  BC_FRONT COUPLED Part_Air 20.0
+  BC_BACK  INSULATED
+END_GROUP

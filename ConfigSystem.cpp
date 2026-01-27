@@ -330,6 +330,21 @@ void ConfigSystem::export_vtk(const std::string& filename, double current_time, 
         }
     }
 
+    // ==========================================
+    // 字段 2: 阴影因子 (ShadowFactor) - [新增部分]
+    // ==========================================
+    file << "SCALARS ShadowFactor float 1\n";
+    file << "LOOKUP_TABLE default\n";
+
+    for (const auto& node : nodes) {
+        if (node.type == NODE_SURFACE) {
+            for (size_t i = 0; i < node.geometry_tris.size(); ++i) {
+                // 写入该节点的阴影因子 (0.0=遮挡, 1.0=全亮)
+                file << node.shadow_factor << "\n";
+            }
+        }
+    }
+
     file.close();
     // std::cout << "Exported: " << filename << std::endl;
 }
@@ -363,7 +378,7 @@ void ConfigSystem::export_results_tai_format(const std::string& filename, const 
             }
 
             // 4. 输出温度值 (格式: f <temp>)
-            out << "f " << node.T_front << "\n";
+            out << "f " << node.T_front << " " << node.T_back << "\n";
         }
     }
     out.close();

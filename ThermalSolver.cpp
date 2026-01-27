@@ -365,13 +365,41 @@ void ThermalSolver::update_shadows(const Vec3& sun_dir) {
     Vec3 normalized_sun_dir = normalize(sun_dir);
     const double MAX_DIST = 1.0e20; // 太阳视为无限远
 
+    // ==========================================
+    // 【实验配置区域】修改这里来切换实验组！
+    // ==========================================
+    // 模式 1: 基准组 (Baseline) - 传统硬阴影，单点采样
+    // 模式 2: 实验组 (Ours)     - 软阴影，QMC 多点采样
+    // 模式 3: 真值组 (GT)       - 极高采样 (跑一次用来做参考)
+
+    int MODE = 2; //
+
     // 【物理参数】太阳视半径 (弧度)
     // 视直径约 0.53度 -> 半径 ~0.265度 -> ~0.0046 弧度
-    const double SOLAR_RADIUS_RAD = 0.0046;
+    double SOLAR_RADIUS_RAD = 0.0;
 
     // 【采样配置】
     // 建议至少 16，因为我们现在同时在"空间"和"角度"两个域上采样
-    const int SAMPLES_PER_NODE = 256;
+    int SAMPLES_PER_NODE = 1;
+
+    if (MODE == 1) {
+        // Baseline: 点光源，单点采样
+        SOLAR_RADIUS_RAD = 0.0;
+        SAMPLES_PER_NODE = 1;
+        std::cout << "[Experiment] Running BASELINE Mode (Hard Shadow)..." << std::endl;
+    }
+    else if (MODE == 2) {
+        // Ours: 太阳圆盘(0.0046弧度)，工程级采样(16)
+        SOLAR_RADIUS_RAD = 0.0046;
+        SAMPLES_PER_NODE = 16;
+        std::cout << "[Experiment] Running PROPOSED Mode (Soft Shadow, N=16)..." << std::endl;
+    }
+    else if (MODE == 3) {
+        // Ground Truth: 极高采样
+        SOLAR_RADIUS_RAD = 0.0046;
+        SAMPLES_PER_NODE = 1024;
+        std::cout << "[Experiment] Running GROUND TRUTH Mode (N=1024)..." << std::endl;
+    }
 
     // OpenMP 并行
 #pragma omp parallel for schedule(dynamic)
@@ -404,27 +432,16 @@ void ThermalSolver::update_shadows(const Vec3& sun_dir) {
             }
         }
 
-        // 处理无几何或退化情况
-        if (!has_geometry || total_area < 1e-12) {
-            // 回退到简单的单点+圆锥采样 (仅质心)
-            int visible = 0;
-            for (int s = 1; s <= SAMPLES_PER_NODE; ++s) {
-                // 仅使用维度 7, 11 做角度抖动
-                double u_angle = halton_sequence(s, 7);
-                double v_angle = halton_sequence(s, 11);
-                Vec3 ray_dir = sample_cone_deterministic(normalized_sun_dir, SOLAR_RADIUS_RAD, u_angle, v_angle);
-
-                Vec3 origin = receiver.centroid + bias_offset;
-                if (!bvh.intersect_shadow(origin, ray_dir, MAX_DIST, i)) visible++;
-            }
-            receiver.shadow_factor = (double)visible / SAMPLES_PER_NODE;
-            continue;
-        }
-
         // 3. 全局 QMC 积分循环 (空间 + 角度)
         int visible_samples = 0;
 
         for (int s = 1; s <= SAMPLES_PER_NODE; ++s) {
+            // 如果是 Mode 1 (Baseline)，强制只采质心，不抖动
+            if (MODE == 1) {
+                Vec3 origin = receiver.centroid + bias_offset;
+                if (!bvh.intersect_shadow(origin, normalized_sun_dir, MAX_DIST, i)) visible_samples++;
+                continue;
+            }
             // --- A. 空间采样 (Spatial Sampling) ---
             // 使用维度 2: 选择三角形
             double r_tri = halton_sequence(s, 2);
@@ -432,36 +449,43 @@ void ThermalSolver::update_shadows(const Vec3& sun_dir) {
 
             // 查找三角形
             int tri_idx = 0;
-            for (size_t k = 0; k < tri_cdf.size(); ++k) {
-                if (target_area <= tri_cdf[k]) {
-                    tri_idx = (int)k;
-                    break;
+            if (has_geometry) {
+                for (size_t k = 0; k < tri_cdf.size(); ++k) {
+                    if (target_area <= tri_cdf[k]) {
+                        tri_idx = (int)k;
+                        break;
+                    }
                 }
-            }
-            const auto& target_tri = receiver.geometry_tris[tri_idx];
+                const auto& target_tri = receiver.geometry_tris[tri_idx];
 
-            // 使用维度 3, 5: 三角形内取点 (重心坐标)
-            double u_bary = halton_sequence(s, 3);
-            double v_bary = halton_sequence(s, 5);
+                // 使用维度 3, 5: 三角形内取点 (重心坐标)
+                double u_bary = halton_sequence(s, 3);
+                double v_bary = halton_sequence(s, 5);
 
-            double sqrt_u = std::sqrt(u_bary);
-            double b0 = 1.0 - sqrt_u;
-            double b1 = v_bary * sqrt_u;
-            double b2 = 1.0 - b0 - b1;
+                double sqrt_u = std::sqrt(u_bary);
+                double b0 = 1.0 - sqrt_u;
+                double b1 = v_bary * sqrt_u;
+                double b2 = 1.0 - b0 - b1;
 
-            Vec3 origin_surf = target_tri.v0 * b0 + target_tri.v1 * b1 + target_tri.v2 * b2;
-            Vec3 origin = origin_surf + bias_offset;
+                Vec3 origin_surf = target_tri.v0 * b0 + target_tri.v1 * b1 + target_tri.v2 * b2;
+                Vec3 origin = origin_surf + bias_offset;
 
-            // --- B. 角度采样 (Angular Sampling) ---
-            // 使用维度 7, 11: 太阳圆锥内取向
-            double u_angle = halton_sequence(s, 7);
-            double v_angle = halton_sequence(s, 11);
+                // --- B. 角度采样 (Angular Sampling) ---
+                // 使用维度 7, 11: 太阳圆锥内取向
+                double u_angle = halton_sequence(s, 7);
+                double v_angle = halton_sequence(s, 11);
 
-            Vec3 ray_dir = sample_cone_deterministic(normalized_sun_dir, SOLAR_RADIUS_RAD, u_angle, v_angle);
+                Vec3 ray_dir = sample_cone_deterministic(normalized_sun_dir, SOLAR_RADIUS_RAD, u_angle, v_angle);
 
-            // --- C. 发射射线 ---
-            if (!bvh.intersect_shadow(origin, ray_dir, MAX_DIST, i)) {
-                visible_samples++;
+                // --- C. 发射射线 ---
+                if (!bvh.intersect_shadow(origin, ray_dir, MAX_DIST, i)) {
+                    visible_samples++;
+                }
+                else {
+                    // 回退逻辑
+                    Vec3 origin = receiver.centroid + bias_offset;
+                    if (!bvh.intersect_shadow(origin, normalized_sun_dir, MAX_DIST, i)) visible_samples++;
+                }
             }
         }
 
@@ -975,6 +999,15 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
                 double C = node.mass_node * node.fluid_cp / eff_dt;
                 double diag = C;
                 double rhs = C * node.T_front;
+
+                // [修复]：稳态防崩溃保护
+                // 如果是稳态初始化，且对角线项过小（说明没有足够的质量或耦合），
+                // 强制加一个微小的数值 epsilon，防止矩阵奇异。
+                if (is_steady_init && diag < 1.0e-6) {
+                    diag = 1.0e-6;
+                    // 可选：同时在 rhs 加上 T_front * epsilon，保持方程平衡 T = T_current
+                    rhs += 1.0e-6 * node.T_front;
+                }
 
                 // 加上内部热源
                 rhs += node.Q_gen_total;
