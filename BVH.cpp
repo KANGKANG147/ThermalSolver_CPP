@@ -90,7 +90,7 @@ static double ray_tri_intersect_t(const Vec3& orig, const Vec3& dir, const Trian
     Vec3 q = cross(s, e1); double v = f * dot(dir, q);
     if (v < 0.0 || u + v > 1.0) return -1.0;
     double t = f * dot(e2, q);
-    if (t > 1e-4 && t < max_dist) return t;
+    if (t > 1e-6 && t < max_dist) return t;
     return -1.0;
 }
 

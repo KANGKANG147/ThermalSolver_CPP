@@ -683,8 +683,8 @@ void ThermalSolver::solve_radiosity_system(double sky_temp_K) {
     double E_ground = SIGMA * std::pow(bg_temp_effective, 4.0);
 
     // 收敛参数
-    const double CONVERGENCE_TOL = 1e-6; // 辐射度收敛阈值 (W/m2)
-    const int MAX_RAD_ITERS = 100;       // 最大迭代次数防止死循环
+    const double CONVERGENCE_TOL = 1e-4; // 辐射度收敛阈值 (W/m2)
+    const int MAX_RAD_ITERS = 1000;       // 最大迭代次数防止死循环
 
     // ---------------------------------------------------------
     // 1. [优化] 预计算发射项 E (避免在迭代中重复 pow 计算)
@@ -715,18 +715,20 @@ void ThermalSolver::solve_radiosity_system(double sky_temp_K) {
         node.J_front = E_emit_f[i] + (1.0 - node.ir_emissivity) * (node.vf_sky_front * E_sky + vf_ground_front * E_ground);
 
         // Back
-        double T_b_K = node.T_back_next + 273.15;
-        E_emit_b[i] = node.ir_emissivity * SIGMA * std::pow(T_b_K, 4.0);
+        
+            double T_b_K = node.T_back_next + 273.15;
+            E_emit_b[i] = node.ir_emissivity * SIGMA * std::pow(T_b_K, 4.0);
 
-        double vf_struct_sum_b = 0.0;
-        for (const auto& link : node.rad_links_back) {
-            vf_struct_sum_b += link.view_factor;
+            double vf_struct_sum_b = 0.0;
+            for (const auto& link : node.rad_links_back) {
+                vf_struct_sum_b += link.view_factor;
+            }
+            double vf_ground_back = 1.0 - node.vf_sky_back - vf_struct_sum_b;
+            if (vf_ground_back < 0.0) vf_ground_back = 0.0;
+
+            node.J_back = E_emit_b[i] + (1.0 - node.ir_emissivity) * (node.vf_sky_back * E_sky + vf_ground_back * E_ground);
         }
-        double vf_ground_back = 1.0 - node.vf_sky_back - vf_struct_sum_b;
-        if (vf_ground_back < 0.0) vf_ground_back = 0.0;
-
-        node.J_back = E_emit_b[i] + (1.0 - node.ir_emissivity) * (node.vf_sky_back * E_sky + vf_ground_back * E_ground);
-    }
+        
 
     // 2. 迭代求解 (Gauss-Seidel)
     int iter = 0;
@@ -866,12 +868,12 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
     // ==========================================
     double TOL_RESID = 0.0055555556;       // 温度容差 (Tolerance)
     double TOL_SLOPE = 1e-5;       // 容差斜率 (Tolerance Slope)
-    int max_iters = is_steady_init ? 100 : 50; // 初始最大迭代数
+    int max_iters = is_steady_init ? 500 : 200; // 初始最大迭代数
     int current_iter = 0;
 
     // 定义松弛因子 (0.0 < omega <= 1.0)
     // 0.6 意味着新值取 60%，旧值保留 40%。这能有效抑制 T^4 的震荡。
-    double relaxation = is_steady_init ? 0.5 : 0.8;
+    double relaxation = is_steady_init ? 0.95 : 0.95;
 
     // 状态记录变量
     double max_resid_curr = 0.0;    // 当前步最大温差 (Delta T)
@@ -997,18 +999,11 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
                 // 我们使用 idx_F 作为流体温度的自由度
                 // idx_B 设为 dummy，或者强行等于 idx_F
                 double C = node.mass_node * node.fluid_cp / eff_dt;
+                // 稳态保护
+                if (is_steady_init && C < 1.0) C = 1.0;
                 double diag = C;
                 double rhs = C * node.T_front;
-
-                // [修复]：稳态防崩溃保护
-                // 如果是稳态初始化，且对角线项过小（说明没有足够的质量或耦合），
-                // 强制加一个微小的数值 epsilon，防止矩阵奇异。
-                if (is_steady_init && diag < 1.0e-6) {
-                    diag = 1.0e-6;
-                    // 可选：同时在 rhs 加上 T_front * epsilon，保持方程平衡 T = T_current
-                    rhs += 1.0e-6 * node.T_front;
-                }
-
+                
                 // 加上内部热源
                 rhs += node.Q_gen_total;
 
@@ -1087,7 +1082,7 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
             }
 
             // 内部热源
-            rhs_F += 0.5 * node.Q_gen_total;
+  //          rhs_F += 0.5 * node.Q_gen_total;
 
             // 导热 (法向)
             double K = node.conductance;
@@ -1373,6 +1368,91 @@ void ThermalSolver::solve_step(double dt, double hour, const Vec3& sun_dir,
     else {
         std::cerr << "[ERROR] Solver crashed. Keeping previous temperature." << std::endl;
         // 不更新 nodes[i].T，相当于时间冻结，防止错误传播
+    }
+
+
+    // =========================================================
+    // [调试工具] 打印特定 Node ID 的热平衡详细数据
+    // =========================================================
+    int target_id = 595; // <--- 【修改这里】：填入您想监控的那个 Node ID (例如 42)
+    static int print_interval = 0;
+
+    // 为了优化性能，我们不需要遍历所有节点，直接访问 target_id 即可
+    if (target_id == 595) {
+        int i = target_id; // 使用目标ID作为索引
+        ThermalNode& node = nodes[i];
+
+        std::cout << "\n=== Heat Balance Analysis (Time: " << std::fixed << std::setprecision(2) << hour << " h) ===" << std::endl;
+        std::cout << "Node ID: " << i << " [" << node.part_name << "]" << std::endl;
+        std::cout << "  Temp Front: " << node.T_front << " C" << std::endl;
+        std::cout << "  Temp Back : " << node.T_back << " C" << std::endl;
+
+        // --- A. 太阳辐射 (Solar) ---
+        std::cout << "  [Solar Input]    " << node.Q_solar_absorbed << " W" << std::endl;
+
+        // --- B. 长波辐射 (Radiation Net) ---
+        std::cout << "  [Rad Net Front]  " << node.Q_rad_front << " W" << std::endl;
+        std::cout << "  [Rad Net Back]   " << node.Q_rad_back << " W" << std::endl;
+
+        // --- C. 对流 (Convection) ---
+        // Front 对流
+        double Q_conv_f = 0.0;
+        if (node.bc_front.type == CONV_COUPLED_NODE) {
+            int f_idx = node.bc_front.coupled_node_idx;
+            if (f_idx >= 0) {
+                double T_fluid = nodes[f_idx].T_front;
+                double h = node.bc_front.fixed_h;
+                Q_conv_f = h * node.area * (T_fluid - node.T_front);
+                std::cout << "  [Conv Front]     (Coupled Air " << f_idx << ": " << T_fluid << "C) Q: " << Q_conv_f << " W" << std::endl;
+            }
+        }
+        else {
+            auto params = get_convection_params(node, true, w);
+            double h = params.first;
+            double T_fluid = params.second;
+            Q_conv_f = h * node.area * (T_fluid - node.T_front);
+            std::cout << "  [Conv Front]     (Env Air: " << T_fluid << "C, h=" << h << ") Q: " << Q_conv_f << " W" << std::endl;
+        }
+
+        // Back 对流
+        double Q_conv_b = 0.0;
+        if (node.bc_back.type == CONV_COUPLED_NODE) {
+            int f_idx = node.bc_back.coupled_node_idx;
+            if (f_idx >= 0) {
+                double T_fluid = nodes[f_idx].T_front;
+                double h = node.bc_back.fixed_h;
+                Q_conv_b = h * node.area * (T_fluid - node.T_back);
+                std::cout << "  [Conv Back]      (Coupled Air " << f_idx << ": " << T_fluid << "C, h=" << h << ") Q: " << Q_conv_b << " W" << std::endl;
+            }
+        }
+        else if (node.bc_back.type != CONV_INSULATED) {
+            auto params = get_convection_params(node, false, w);
+            double h = params.first;
+            double T_fluid = params.second;
+            Q_conv_b = h * node.area * (T_fluid - node.T_back);
+            std::cout << "  [Conv Back]      (Env Air: " << T_fluid << "C) Q: " << Q_conv_b << " W" << std::endl;
+        }
+
+        // --- D. 导热 (Conduction) ---
+        // 1. 厚度方向导热
+        double Q_cond_norm = node.conductance * (node.T_back - node.T_front);
+        std::cout << "  [Cond Normal]    (Back -> Front) " << Q_cond_norm << " W" << std::endl;
+
+        // 2. 横向导热
+        double Q_lat_front_net = 0.0;
+        for (const auto& link : node.neighbors) {
+            double k_link = link.conductance * 0.5;
+            double T_neigh = nodes[link.neighbor_idx].T_front;
+            Q_lat_front_net += k_link * (T_neigh - node.T_front);
+        }
+        std::cout << "  [Cond Lateral]   (Front Neighbors) Net: " << Q_lat_front_net << " W" << std::endl;
+
+        // --- E. 总能量平衡 ---
+        double total_input = node.Q_solar_absorbed + node.Q_rad_front + Q_conv_f + Q_cond_norm + Q_lat_front_net;
+        std::cout << "  [TOTAL INPUT]    " << total_input << " W" << std::endl;
+
+        std::cout << "==========================================\n" << std::endl;
+
     }
 }
 

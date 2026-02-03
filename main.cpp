@@ -21,7 +21,7 @@ int main() {
 
     // 2. 加载配置和数据
     config.init_defaults();
-    config.load_config("Input/config.txt"); // 如果找不到，会用代码里的默认值
+    config.load_config("Input/config_engine.txt"); // 如果找不到，会用代码里的默认值
 
     // 注意：这里把 config 和 solver 连起来了，加载的模型直接放进 solver.nodes
     if (!config.load_obj_model(config.settings.obj_file, solver.nodes)) {
@@ -56,7 +56,7 @@ int main() {
 
     // 计算角系数 (预计算)
     // 建议采样数 1000 以上，越多越准，但越慢
-    solver.calculate_view_factors(1000);
+    solver.calculate_view_factors(10000);
     // 输出过滤
   /*  std::vector<int> surf_indices;
     for (int i = 0; i < g_nodes.size(); ++i) {
@@ -120,7 +120,8 @@ int main() {
 
     // 遍历所有节点，生成动态列名 (例如: Deck_0, Hull_1, ...)
     for (size_t i = 0; i < solver.nodes.size(); ++i) {
-        out_csv << "," << solver.nodes[i].part_name << "_" << i;
+        out_csv << "," << solver.nodes[i].part_name << "_T_" << i;
+        out_csv << "," << solver.nodes[i].part_name << "_Qrad_" << i;
     }
     out_csv << "\n";
 
@@ -154,6 +155,7 @@ int main() {
         // 遍历所有节点输出初始温度
         for (const auto& node : solver.nodes) {
             out_csv << "," << node.T_front;
+            out_csv << "," << node.Q_rad_front;
         }
         out_csv << "\n";
 

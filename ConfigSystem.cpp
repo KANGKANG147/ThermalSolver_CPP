@@ -24,11 +24,15 @@ void ConfigSystem::init_defaults() {
     };*/
     mat_lib["Steel"] = { 52.019, 7768.98, 460.967, 0.74, 0.74 };
     mat_lib["Iron"] = { 40.0, 7800.0, 500.0, 0.8, 0.85 };
-    mat_lib["Glass"] = { 0.81, 2800.0, 800.0, 0.1, 0.9 };
+    mat_lib["Glass"] = { 0.81, 2800.0, 800.0, 0.05, 0.95 };
     mat_lib["Insulation"] = { 0.04, 50.0, 1000.0, 0.05, 0.95 };
     mat_lib["Air"] = { 0.026, 1.225, 1005.0, 0.0, 0.0 };
     mat_lib["Water"] = { 0.6, 998.0, 4180.0, 0.0, 0.0 };
-    mat_lib["TestMat"] = { 50.0, 1000.0, 100.0, 0.0, 1.0 };
+    mat_lib["TestMat"] = { 52.019, 7768.98, 460.967, 0.0, 1.0 };
+    mat_lib["SteelRubber"] = { 52.019, 7768.98, 460.967, 0.73, 0.92 };
+    mat_lib["Rubber"] = { 0.1558, 961.031, 2011.34, 0.73, 0.92 };
+    mat_lib["SteelPlastic"] = { 52.019, 7768.98, 460.967, 0.93, 0.92 };
+    mat_lib["SteelGlass"] = { 52.019, 7768.98, 460.967, 0.05, 0.95 };
 
     // 设置硬编码默认配置作为保底
     ConvectionBC bc_weather = { CONV_WIND, 0, 0, 10.0, 3.0 };
@@ -345,6 +349,24 @@ void ConfigSystem::export_vtk(const std::string& filename, double current_time, 
         }
     }
 
+    // 在 ConfigSystem.cpp 的 export_vtk 函数末尾，file.close() 之前加入：
+
+    // ==========================================
+    // 字段 3: 调试用法线 (Normals) - [新增部分]
+    // ==========================================
+    file << "VECTORS NodeNormals float\n"; // 声明一个向量场
+
+    for (const auto& node : nodes) {
+        if (node.type == NODE_SURFACE) {
+            for (size_t i = 0; i < node.geometry_tris.size(); ++i) {
+                // 将代码计算的 node.normal 写入每个三角形
+                // 这样我们在 ParaView 里看到的箭头就是代码逻辑里真实的法线
+                file << node.normal.x << " " << node.normal.y << " " << node.normal.z << "\n";
+            }
+        }
+    }
+
+    // ... 这一行是原本的 file.close();
     file.close();
     // std::cout << "Exported: " << filename << std::endl;
 }
@@ -378,7 +400,7 @@ void ConfigSystem::export_results_tai_format(const std::string& filename, const 
             }
 
             // 4. 输出温度值 (格式: f <temp>)
-            out << "f " << node.T_front << " " << node.T_back << "\n";
+            out << "f " << node.T_front << "\n";
         }
     }
     out.close();
