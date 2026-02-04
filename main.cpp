@@ -21,7 +21,7 @@ int main() {
 
     // 2. 加载配置和数据
     config.init_defaults();
-    config.load_config("Input/config_engine.txt"); // 如果找不到，会用代码里的默认值
+    config.load_config("Input/config_test_0203.txt"); // 如果找不到，会用代码里的默认值
 
     // 注意：这里把 config 和 solver 连起来了，加载的模型直接放进 solver.nodes
     if (!config.load_obj_model(config.settings.obj_file, solver.nodes)) {

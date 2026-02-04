@@ -48,6 +48,8 @@ public:
     // 解析耦合关系：将 PartName 映射到 node index
     void resolve_couplings();
 
+    void enforce_reciprocity();
+
     // 更新阴影遮挡
     void update_shadows(const Vec3& sun_dir);
 

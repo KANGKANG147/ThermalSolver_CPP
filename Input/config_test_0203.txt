@@ -1,19 +1,19 @@
 # ==========================================
 # 全局仿真参数配置
 # ==========================================
-OBJ_FILE Input/engine.tai
+OBJ_FILE Input/c17_0203.tai
 WEATHER_FILE Input/w071984_48hr.txt
 # 仿真开始：1984年7月19日 6:00 
-SIM_START 1984 7 19 12.0
+SIM_START 1984 7 20 15.0
 # 仿真结束：1984年7月19日 22:00 
-SIM_END   1984 7 19 12.0
+SIM_END   1984 7 20 18.0
 # 步长（s）
 DT        1200.0
 
 # 世界坐标设置
 # 北京 (北纬39.9, 东经116.4, UTC+8)
 # Taitherm里后两项取反
-GEO_LOCATION    47.2 -88.5 -4.0
+GEO_LOCATION    30.4 -120.52 -8.0
 
 # 模型朝向: 
 # 0   = Y轴指北
@@ -35,42 +35,68 @@ GROUND_TEMP        25.0     # 地面温度 (C)
 GROUND_ALBEDO      0.2      # 地面反照率
 
 # ==========================================
-#  定义流体节点 (中间介质：空气)
+# Group 1: 船体外壳 (水上部分)
+# 外面吹风，里面是机舱
 # ==========================================
 BEGIN_GROUP
-    NAME        Part_Air1
-    TYPE        FLUID
-    MAT         Air          # 使用内置的 Air 材质 (密度小,热容小)
-    VOL         300.0         # 关键：设定空气体积 (立方米), 决定了热惯性 m*Cp
-    INIT_TEMP   20.0         # 初始气温
-    # 流体节点通常不需要 BC，因为它被周围表面包裹
-END_GROUP
-
-# ==========================================
-# Group 10: 引擎 (恒温热源)
-# 设定为 88度 恒定
-# ==========================================
-BEGIN_GROUP
-  NAME Engine
-  TYPE ASSIGNED
+  NAME Luntai
+  TYPE CALCULATED
   MAT Steel
-  THICK 0.005
-  INIT_TEMP 1000.0
-  BC_FRONT COUPLED Part_Air1 10.0
+  THICK 0.015
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 20.0 0.0
   BC_BACK  INSULATED
 END_GROUP
 
 # ==========================================
-# Group 11: 引擎室地板/墙壁 (内部部件)
-# 假设两面都是机舱空气
+# Group 2: 船体外壳 (水下部分)
+# 外面是海水(h=50, T=15)，里面是机舱
 # ==========================================
 BEGIN_GROUP
-  NAME Engine Room
+  NAME hot
   TYPE CALCULATED
   MAT Steel
-  THICK 0.005
+  THICK 0.015
   INIT_TEMP 20.0
-  BC_FRONT FIXED 10.0 0.0
-  BC_BACK  COUPLED Part_Air1 10.0
+  BC_FRONT FIXED 20.0 0.0
+  BC_BACK  INSULATED
 END_GROUP
 
+# ==========================================
+# Group 3: 主甲板
+# ==========================================
+BEGIN_GROUP
+  NAME body
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.015
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 20.0 0.0
+  BC_BACK  INSULATED
+END_GROUP
+
+# ==========================================
+# Group 4: 上层甲板
+# ==========================================
+BEGIN_GROUP
+  NAME BL
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.015
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 20.0 0.0
+  BC_BACK  INSULATED
+END_GROUP
+
+# ==========================================
+# Group 5: 后部舱室
+# ==========================================
+BEGIN_GROUP
+  NAME dimian
+  TYPE CALCULATED
+  MAT Steel
+  THICK 0.015
+  INIT_TEMP 20.0
+  BC_FRONT FIXED 20.0 0.0
+  BC_BACK  INSULATED
+END_GROUP

@@ -245,113 +245,235 @@ void ThermalSolver::resolve_couplings() {
     std::cout << "[Coupling] Resolved " << resolved_count << " connections." << std::endl;
 }
 
+// =================================================================
+// 辅助函数：计算三角形面积 (需确保 MathUtils.h 中有 cross 和 length)
+// =================================================================
+double triangle_area(const Triangle& tri) {
+    // 面积 = 0.5 * |AB x AC|
+    return 0.5 * length(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
+}
+
+// =================================================================
+// 辅助函数：在三角形内随机取样 (重心坐标)
+// =================================================================
+Vec3 random_point_in_triangle(const Triangle& tri) {
+    double r1 = random_double();
+    double r2 = random_double();
+    double sqrt_r1 = std::sqrt(r1);
+
+    // 重心坐标系数
+    double b0 = 1.0 - sqrt_r1;
+    double b1 = sqrt_r1 * (1.0 - r2);
+    double b2 = sqrt_r1 * r2;
+
+    return tri.v0 * b0 + tri.v1 * b1 + tri.v2 * b2;
+}
+
+// =================================================================
+// 新增函数：强制执行互惠性原则 A_i * F_ij = A_j * F_ji
+// =================================================================
+void ThermalSolver::enforce_reciprocity() {
+    std::cout << "[MCRT] Enforcing Reciprocity (A_i * F_ij = A_j * F_ji)..." << std::endl;
+
+    // 遍历所有节点
+    for (int i = 0; i < nodes.size(); ++i) {
+        ThermalNode& node_i = nodes[i];
+        if (node_i.type != NODE_SURFACE) continue;
+
+        // 定义处理正面和背面的 Lambda，避免重复代码
+        auto process_side = [&](std::vector<RadLink>& links_i, double area_i, bool i_is_front) {
+            for (auto& link : links_i) {
+                int j = link.target_node_idx;
+                bool j_is_front = link.target_is_front;
+
+                // 为了避免重复处理，只处理 i < j 的情况，或者当 i == j 时处理 front->back
+                // (这里简单起见，只处理 id_i < id_j 类似的逻辑，或者直接双向检查)
+                // 更稳健的方法：直接查找对方的链接
+
+                ThermalNode& node_j = nodes[j];
+                double area_j = node_j.area;
+                std::vector<RadLink>& links_j = j_is_front ? node_j.rad_links_front : node_j.rad_links_back;
+
+                // 在 j 的链接中寻找指向 i 的链接
+                auto it = std::find_if(links_j.begin(), links_j.end(),
+                    [&](const RadLink& l) { return l.target_node_idx == i && l.target_is_front == i_is_front; });
+
+                double F_ji = 0.0;
+                if (it != links_j.end()) {
+                    F_ji = it->view_factor;
+                }
+
+                double F_ij = link.view_factor;
+
+                // 计算平滑后的能量交换因子
+                // Energy = (Ai * Fij + Aj * Fji) / 2
+                double energy_avg = (area_i * F_ij + area_j * F_ji) * 0.5;
+
+                // 更新 F_ij
+                link.view_factor = (area_i > 1e-9) ? (energy_avg / area_i) : 0.0;
+
+                // 更新 F_ji (如果对方链接存在)
+                if (it != links_j.end()) {
+                    it->view_factor = (area_j > 1e-9) ? (energy_avg / area_j) : 0.0;
+                }
+                else if (energy_avg > 1e-9) {
+                    // 如果对方没看到我，但算出来应该看到，需要补一个链接 (这种情况较少，可选择忽略或添加)
+                    // 简单起见，这里暂不动态添加新链接，避免破坏 vector 迭代器
+                }
+            }
+            };
+
+        // 处理 i 的正面
+        process_side(node_i.rad_links_front, node_i.area, true);
+
+        // 处理 i 的背面 (如果存在)
+        if (node_i.bc_back.type != CONV_INSULATED) {
+            process_side(node_i.rad_links_back, node_i.area, false);
+        }
+    }
+}
+
 // ==========================================
 // 2. MCRT 核心实现 把一个 ThermalNode 视为两个独立的辐射源
 // ==========================================
 void ThermalSolver::calculate_view_factors(int samples) {
-    // --- 1. 计算特征码并尝试加载缓存 ---
+    // 1. 尝试加载缓存
     size_t checksum = compute_geometry_checksum(samples);
     std::string cache_file = "vf_cache_" + std::to_string(checksum) + ".bin";
+    if (load_vf_cache(cache_file, samples)) return;
 
-    if (load_vf_cache(cache_file, samples)) {
-        // 如果加载成功，直接返回，跳过漫长的计算！
-        return;
-    }
-
-    std::cout << "[MCRT] Calculating View Factors (" << samples << " rays/node)..." << std::endl;
-
-    // 确保场景尺度已计算
+    std::cout << "[MCRT] Calculating View Factors (" << samples << " rays/node) with Surface Sampling..." << std::endl;
     ensure_scene_scale();
-    // [优化1] 基于场景尺度的自适应 Bias
-    // 取场景大小的万分之一作为偏移量，且不小于 1e-5 米
-    const double ADAPTIVE_BIAS = std::max(1e-5, scene_scale * 1e-4);
 
-#pragma omp parallel for 
+    // 降低截断阈值，防止小角度能量丢失
+    const double VF_THRESHOLD = 1e-6;
+    // 减小 Bias，防止漏光
+    const double RAY_BIAS = std::max(1e-6, scene_scale * 1e-5);
+
+#pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < nodes.size(); ++i) {
         ThermalNode& node = nodes[i];
         if (node.type != NODE_SURFACE) continue;
 
-        // 计算节点的【正面】辐射
-        // 临时统计 map: key -> pair<目标ID, 目标正反>, value -> 命中次数
-        std::map<std::pair<int, bool>, int> hits_front;
-        int sky_hits_front = 0;
-        int sea_hits_front = 0;
-        Vec3 origin_f = node.centroid + node.normal * ADAPTIVE_BIAS;// 发射点：质心沿法线向外偏移一点点
+        // --- 预计算：构建三角形面积 CDF (用于随机选择发射面) ---
+        std::vector<double> tri_cdf;
+        double total_tri_area = 0.0;
+        bool has_geo = !node.geometry_tris.empty();
 
-        for (int s = 0; s < samples; ++s) {
-            // 1. 生成基于法线(Normal)的随机射线
-            Vec3 dir = sample_hemisphere(node.normal);
-            // 查找最近的物体，距离上限设大一点
-            HitInfo hit = bvh.intersect_closest(origin_f, dir, 1e20, i);
-            // 击中了别的物体 (target)
-            if (hit.has_hit) {
-                hits_front[{hit.hit_node_index, hit.hit_front_side}]++;
-            }
-            else {
-                // 未击中船体 -> 判断是天还是海
-                // Z > 0 视为天空， Z <= 0 视为海面
-                // (注意：这里假设 Z=0 是海平面。如果你的海平面是其他高度，请修改此处)
-                if (dir.z > 0.0) {
-                    sky_hits_front++;
-                }
-                else {
-                    sea_hits_front++;
-                }
+        if (has_geo) {
+            for (const auto& tri : node.geometry_tris) {
+                total_tri_area += triangle_area(tri);
+                tri_cdf.push_back(total_tri_area);
             }
         }
 
-        // 归一化并存入 rad_links_front
-        node.rad_links_front.clear();
-        for (auto const& entry : hits_front) {
-            auto const& map_key = entry.first;
-            int count = entry.second;
-            double vf = (double)count / samples;
-            if (vf > 0.001) node.rad_links_front.push_back({ map_key.first, map_key.second, vf });
-        }
-        node.vf_sky_front = (double)sky_hits_front / samples;
-
-        // 计算节点的【背面】辐射
-        if (node.bc_back.type != CONV_INSULATED) {
-            std::map<std::pair<int, bool>, int> hits_back;
-            int sky_hits_back = 0;
-            int sea_hits_back = 0;
-            Vec3 origin_b = node.centroid - node.normal * ADAPTIVE_BIAS;// 向内偏移
-            Vec3 normal_b = node.normal * -1.0;// 反向法线
+        // 定义 lambda：发射一组射线并统计
+        auto trace_hemisphere = [&](Vec3 normal, bool is_front) {
+            std::map<std::pair<int, bool>, int> hit_counts;
+            int hits_sky = 0;
+            int hits_sea = 0; // 显式统计海面
+            int hits_struct = 0;
 
             for (int s = 0; s < samples; ++s) {
-                // 1. 生成基于反向法线(-Normal)的随机射线
-                Vec3 dir = sample_hemisphere(normal_b);
-                HitInfo hit = bvh.intersect_closest(origin_b, dir, 1e20, i);
+                // [改进点1] 表面随机采样：不再只从质心发射
+                Vec3 origin_surf = node.centroid; // 默认回退
+
+                if (has_geo && total_tri_area > 1e-9) {
+                    double r_area = random_double() * total_tri_area;
+                    // 二分查找对应的三角形
+                    auto it = std::lower_bound(tri_cdf.begin(), tri_cdf.end(), r_area);
+                    int idx = std::distance(tri_cdf.begin(), it);
+                    if (idx >= node.geometry_tris.size()) idx = node.geometry_tris.size() - 1;
+
+                    origin_surf = random_point_in_triangle(node.geometry_tris[idx]);
+                }
+
+                // 偏移 Bias
+                Vec3 origin = origin_surf + normal * RAY_BIAS;
+
+                // 随机方向 (余弦加权)
+                Vec3 dir = sample_hemisphere(normal);
+
+                // 射线追踪
+                HitInfo hit = bvh.intersect_closest(origin, dir, 1e20, i);
+
                 if (hit.has_hit) {
-                    hits_back[{hit.hit_node_index, hit.hit_front_side}]++;
+                    hit_counts[{hit.hit_node_index, hit.hit_front_side}]++;
+                    hits_struct++;
                 }
                 else {
-                    // 判断天/海
-                    if (dir.z > 0.0) {
-                        sky_hits_back++;
-                    }
-                    else {
-                        sea_hits_back++;
-                    }
+                    // 环境判断
+                    if (dir.z > 0.0) hits_sky++;
+                    else hits_sea++;
                 }
             }
 
-            node.rad_links_back.clear();
-            for (auto const& entry : hits_back) {
-                auto const& map_key = entry.first;
-                int count = entry.second;
-                double vf = (double)count / samples;
-                if (vf > 0.001) node.rad_links_back.push_back({ map_key.first, map_key.second, vf });
+            // [改进点2] 归一化处理：排除丢失的射线，只在有效击中内分配权重
+            // 总有效射线 = 结构 + 天空 + 海面
+            // 如果所有射线都丢失(极不可能)，则 scale=0
+            // ============================================================
+            // [新增核心修复]：封闭腔体强制归一化 (防漏光)
+            // ============================================================
+            double scale = 0.0;
+
+            // 判断是否为封闭腔体部件 (根据 Part Name)
+            // 请根据您的实际命名规则修改，例如包含 "Engine", "Room", "Tank" 等
+            bool is_enclosed_part = (node.part_name.find("Engine") != std::string::npos) ||
+                (node.part_name.find("Room") != std::string::npos);
+
+            if (is_enclosed_part) {
+                // 【封闭模式】：强制忽略天空和海面，将能量全部分配给结构
+                // 这样即使射线穿过缝隙打到外面，也会被强行拉回到结构上
+                if (hits_struct > 0) {
+                    scale = 1.0 / (double)hits_struct;
+                }
+                else {
+                    scale = 0.0; // 极端情况
+                }
+                hits_sky = 0; // 强制清零
+                hits_sea = 0; // 强制清零
             }
-            node.vf_sky_back = (double)sky_hits_back / samples;
+            else {
+                // 【开放模式】：正常归一化 (Deck, Hull 外侧等)
+                int total_valid = hits_struct + hits_sky + hits_sea;
+                scale = (total_valid > 0) ? (1.0 / (double)total_valid) : 0.0;
+            }
+
+            // 写入 Sky VF
+            double vf_sky = hits_sky * scale;
+
+            // 写入 Struct VF
+            std::vector<RadLink>& links = is_front ? node.rad_links_front : node.rad_links_back;
+            links.clear();
+
+            for (auto const& entry : hit_counts) {
+                double vf = entry.second * scale;
+                // [改进点3] 使用更小的截断阈值
+                if (vf > VF_THRESHOLD) {
+                    links.push_back({ entry.first.first, entry.first.second, vf });
+                }
+            }
+
+            return vf_sky;
+        };
+
+        // 计算正面
+        node.vf_sky_front = trace_hemisphere(node.normal, true);
+
+        // 计算背面
+        if (node.bc_back.type != CONV_INSULATED) {
+            node.vf_sky_back = trace_hemisphere(node.normal * -1.0, false);
         }
         else {
             node.vf_sky_back = 0.0;
+            node.rad_links_back.clear();
         }
     }
-    std::cout << "[MCRT] Done." << std::endl;
 
-    // --- 2. 计算完成后保存缓存 ---
+    // [改进点4] 强制互惠性
+    enforce_reciprocity();
+
+    std::cout << "[MCRT] Done." << std::endl;
     save_vf_cache(cache_file, samples);
 }
 
